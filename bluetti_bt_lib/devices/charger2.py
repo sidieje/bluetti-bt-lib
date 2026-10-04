@@ -1,5 +1,14 @@
 from ..base_devices import BaseDeviceV2
-from ..fields import FieldName, UIntField, DecimalField, SwapStringField, SerialNumberField, SignedDecimalField, AbsoluteDecimalField
+from ..bluetooth import ReadableRegisters
+from ..fields import (
+    FieldName,
+    UIntField,
+    DecimalField,
+    SwapStringField,
+    SerialNumberField,
+    SignedDecimalField,
+    AbsoluteDecimalField,
+)
 
 
 class CHARGER2(BaseDeviceV2):
@@ -26,3 +35,13 @@ class CHARGER2(BaseDeviceV2):
                 SerialNumberField(FieldName.DEVICE_SN, 15506),
             ],
         )
+
+    def get_device_type_registers(self):
+        return [
+            ReadableRegisters(15500, 6),
+        ]
+
+    def get_device_sn_registers(self):
+        return [
+            ReadableRegisters(15506, 4),
+        ]

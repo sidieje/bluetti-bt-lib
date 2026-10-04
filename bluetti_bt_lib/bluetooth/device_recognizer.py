@@ -5,6 +5,7 @@ from typing import Any, Callable, List
 from ..base_devices import BluettiDevice, BaseDeviceV1, BaseDeviceV2
 from ..bluetooth import DeviceReader, DeviceReaderConfig
 from ..devices import DEVICE_NAME_RE
+from ..devices.charger2 import CHARGER2
 from ..fields import FieldName
 
 _LOGGER = logging.getLogger(__name__)
@@ -27,6 +28,7 @@ async def recognize_device(
 ) -> DeviceRecognizerResult | None:
     # Since we don't know the type we use the base device
     bluetti_devices: List[BluettiDevice] = [
+        CHARGER2(),
         BaseDeviceV2(),
         BaseDeviceV1(),
     ]

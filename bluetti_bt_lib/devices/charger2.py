@@ -7,7 +7,6 @@ from ..fields import (
     SwapStringField,
     SerialNumberField,
     SignedDecimalField,
-    AbsoluteDecimalField,
 )
 
 

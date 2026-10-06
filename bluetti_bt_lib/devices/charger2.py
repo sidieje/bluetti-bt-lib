@@ -20,11 +20,11 @@ class CHARGER2(BaseDeviceV2):
                 UIntField(FieldName.DC_INPUT_POWER, 15534),
 
                 DecimalField(FieldName.DC_2_OUTPUT_VOLTAGE, 15535, 1),
-                AbsoluteDecimalField(FieldName.DC_2_OUTPUT_CURRENT, 15536, 2),
-                AbsoluteDecimalField(FieldName.DC_2_OUTPUT_POWER_TOTAL, 15538, 0),
+                SignedDecimalField(FieldName.DC_2_OUTPUT_CURRENT, 15536, 2, multiplier=-1),
+                SignedDecimalField(FieldName.DC_2_OUTPUT_POWER_TOTAL, 15538, 0, multiplier=-1),
 
                 DecimalField(FieldName.B_VOLTAGE, 15543, 1),
-                SignedDecimalField(FieldName.B_IO_POWER, 15546, 0),
+                SignedDecimalField(FieldName.B_IO_POWER, 15546, 0, multiplier=-1),
                 UIntField(FieldName.BATTERY_SOC, 15584),
 
                 DecimalField(FieldName.B_ALT_VOLTAGE, 15539, 1),

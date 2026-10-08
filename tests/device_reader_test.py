@@ -8,8 +8,7 @@ from bluetti_bt_lib.utils.bleak_client_mock import ClientMockNoEncryption
 
 
 class TestDeviceReader(unittest.IsolatedAsyncioTestCase):
-    def __init__(self, methodName="runTest"):
-        super().__init__(methodName)
+    def setUp(self):
         self.ble_mock = ClientMockNoEncryption()
 
         # Device type
@@ -34,6 +33,7 @@ class TestDeviceReader(unittest.IsolatedAsyncioTestCase):
             device,
             asyncio.Future,
             ble_client=self.ble_mock,
+            lock=asyncio.Lock(),
         )
 
         data = await reader.read()
@@ -56,6 +56,7 @@ class TestDeviceReader(unittest.IsolatedAsyncioTestCase):
             device,
             asyncio.Future,
             ble_client=self.ble_mock,
+            lock=asyncio.Lock(),
         )
 
         data = await reader.read()

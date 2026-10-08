@@ -26,14 +26,14 @@ class DeviceReader:
         bluetti_device: BluettiDevice,
         future_builder_method: Callable[[], asyncio.Future[Any]],
         config: DeviceReaderConfig = DeviceReaderConfig(),
-        lock: asyncio.Lock = asyncio.Lock(),
+        lock: asyncio.Lock | None = None,
         ble_client: BleakClient | None = None,
     ):
         self.mac = mac
         self.bluetti_device = bluetti_device
         self.create_future = future_builder_method
         self.config = config
-        self.polling_lock = lock
+        self.polling_lock = lock or asyncio.Lock()
 
         self.ble_client = ble_client
         """Used for unittests"""
@@ -51,6 +51,85 @@ class DeviceReader:
         self.notify_future: asyncio.Future[Any] | None = None
         self.encryption = BluettiEncryption()
         self.encrypted_buffer = bytearray()
+        self._connected = False
+
+    async def connect(self) -> bool:
+        """Establish a persistent connection to the device.
+        
+        Note: This method should be called while holding the polling_lock
+        to avoid race conditions. The read() method handles this automatically.
+        """
+        if self._connected and self.client and self.client.is_connected:
+            return True
+
+        try:
+            if self.ble_client:
+                self.device = None
+            else:
+                self.device = await BleakScanner.find_device_by_address(
+                    self.mac, timeout=5
+                )
+
+                if self.device is None:
+                    self.logger.error("Device not found")
+                    return False
+
+            self.logger.debug("Connecting to device")
+
+            if self.ble_client:
+                self.client = self.ble_client
+            else:
+                self.client = await establish_connection(
+                    BleakClientWithServiceCache,
+                    self.device,
+                    self.device.name or "Unknown Device",
+                    max_attempts=10,
+                )
+
+            if not self.has_notifier:
+                await self.client.start_notify(
+                    NOTIFY_UUID, self._notification_handler
+                )
+                self.has_notifier = True
+
+            self.logger.debug("Connected to device")
+
+            if self.config.use_encryption:
+                while not self.encryption.is_ready_for_commands:
+                    await asyncio.sleep(1)
+                    self.logger.debug("Waiting for encryption handshake...")
+
+            self._connected = True
+            return True
+
+        except BleakError as err:
+            self.logger.warning("Bleak error during connect: %s", err)
+            return False
+        except BaseException as err:
+            self.logger.warning("Unknown error during connect: %s", err)
+            return False
+
+    async def disconnect(self):
+        """Disconnect from the device."""
+        if not self._connected:
+            return
+
+        async with self.polling_lock:
+            if self.has_notifier:
+                try:
+                    await self.client.stop_notify(NOTIFY_UUID)
+                    self.logger.debug("Stopped notifier")
+                except Exception:
+                    pass
+                self.has_notifier = False
+
+            if self.client:
+                await self.client.disconnect()
+                self.logger.debug("Disconnected from device")
+
+            self.encryption.reset()
+            self.encrypted_buffer.clear()
+            self._connected = False
 
     async def read(
         self, only_registers: List[ReadableRegisters] | None = None, raw: bool = False
@@ -70,47 +149,16 @@ class DeviceReader:
         async with self.polling_lock:
             try:
                 async with async_timeout.timeout(self.config.timeout):
-                    self.logger.debug("Searching for device")
-
-                    if self.ble_client:
-                        self.device = None
-                    else:
-                        self.device = await BleakScanner.find_device_by_address(
-                            self.mac, timeout=5
-                        )
-
-                        if self.device is None:
-                            self.logger.error("Device not found")
-                            return
-
-                    self.logger.debug("Connecting to device")
-
-                    if self.ble_client:
-                        self.client = self.ble_client
-                    else:
-                        self.client = await establish_connection(
-                            BleakClientWithServiceCache,
-                            self.device,
-                            self.device.name or "Unknown Device",
-                            max_attempts=10,
-                        )
+                    if not self._connected:
+                        if not await self.connect():
+                            return None
 
                     self.logger.debug("Connected to device")
 
-                    if not self.has_notifier:
-                        await self.client.start_notify(
-                            NOTIFY_UUID, self._notification_handler
-                        )
-                        self.has_notifier = True
-
-                    self.logger.debug("Notification handler setup complete")
-
-                    while (
-                        self.config.use_encryption
-                        and not self.encryption.is_ready_for_commands
-                    ):
-                        await asyncio.sleep(5)
-                        self.logger.debug("Encryption handshake not finished yet")
+                    if self.config.use_encryption:
+                        while not self.encryption.is_ready_for_commands:
+                            await asyncio.sleep(1)
+                            self.logger.debug("Waiting for encryption handshake...")
 
                     for register in registers:
                         body = register.parse_response(
@@ -171,26 +219,12 @@ class DeviceReader:
                 return None
             except BleakError as err:
                 self.logger.warning("Bleak error: %s", err)
+                # Connection may be lost, mark as disconnected
+                self._connected = False
                 return None
             except BaseException as err:
                 self.logger.warning("Unknown error %s", err)
                 return None
-            finally:
-                if self.has_notifier:
-                    try:
-                        await self.client.stop_notify(NOTIFY_UUID)
-                        self.logger.debug("Stopped notifier")
-                    except:
-                        # Ignore errors here
-                        pass
-                    self.has_notifier = False
-                if self.client:
-                    await self.client.disconnect()
-                    self.logger.debug("Disconnected from device")
-
-            # Reset Encryption keys
-            self.encryption.reset()
-            self.encrypted_buffer.clear()
 
             # Check if dict is empty
             if not parsed_data:
@@ -331,7 +365,10 @@ class DeviceReader:
         # Save data
         self.notify_response.extend(data)
 
-        if self.notify_future is None:
+        # The connection is persistent, so notifications can arrive outside of
+        # a pending command (leftovers, write acknowledgements, ...). Only the
+        # future of the running command may be resolved here.
+        if self.notify_future is None or self.notify_future.done():
             return
 
         self.notify_future.set_result(self.notify_response)

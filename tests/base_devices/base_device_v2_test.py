@@ -27,6 +27,7 @@ class TestV2(unittest.IsolatedAsyncioTestCase):
             device,
             asyncio.Future,
             ble_client=self.ble_mock,
+            lock=asyncio.Lock(),
         )
 
         data = await reader.read()

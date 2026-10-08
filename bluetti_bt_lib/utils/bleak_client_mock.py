@@ -48,8 +48,21 @@ class BleakClientMock:
     """Mock a BLE Client."""
 
     def __init__(self, packs_max: int = 0):
+        self.address = "00:11:00:11:00:11"
         self._bytemap: bytearray = bytearray(40000)
         self.packs: List[bytearray] = [bytearray() for _ in range(packs_max)]
+        self._connected = True
+        self._callback = None
+
+    @property
+    def is_connected(self) -> bool:
+        return self._connected
+
+    async def connect(self) -> None:
+        self._connected = True
+
+    async def disconnect(self) -> None:
+        self._connected = False
 
     def add_r_int(self, register: int, value: int):
         real = register * 2
@@ -84,10 +97,7 @@ class BleakClientMock:
         self,
         char_specifier: Union[BleakGATTCharacteristic, int, str, uuid.UUID],
     ) -> None:
-        return
-
-    async def disconnect(self) -> None:
-        return
+        self._callback = None
 
     async def write_gatt_char(
         self,
@@ -95,6 +105,10 @@ class BleakClientMock:
         data: Buffer,
         response: bool = None,
     ) -> None:
+        if self._callback is None:
+            # Nobody is listening on the notify characteristic
+            return
+
         cmd = struct.unpack_from("!HHHH", data)
         content = await self._get_register(cmd[1], cmd[2])
         await self._callback(char_specifier, content)

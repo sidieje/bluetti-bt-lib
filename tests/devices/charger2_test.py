@@ -38,6 +38,22 @@ class TestCharger2(unittest.TestCase):
         self.assertEqual(off_command.address, 15600)
         self.assertEqual(off_command.value, 0xAA2A)
 
+    def test_system_switch_is_classified_as_switch(self):
+        switch_fields = self.device.get_switch_fields()
+
+        self.assertIn(
+            FieldName.CTRL_SYSTEM_ON_OFF.value,
+            [field.name for field in switch_fields],
+        )
+
+    def test_system_switch_is_not_classified_as_sensor(self):
+        sensor_fields = self.device.get_sensor_fields()
+
+        self.assertNotIn(
+            FieldName.CTRL_SYSTEM_ON_OFF.value,
+            [field.name for field in sensor_fields],
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -3,7 +3,7 @@ import struct
 from ..base_devices import BaseDeviceV2
 from ..bluetooth import ReadableRegisters
 from ..fields import (
-    DeviceField,
+    SwitchField,
     FieldName,
     UIntField,
     DecimalField,
@@ -14,7 +14,7 @@ from ..fields import (
 from ..registers import WriteableRegister
 
 
-class Charger2SystemSwitchField(DeviceField):
+class Charger2SystemSwitchField(SwitchField):
     """Charger 2 system on/off control.
 
     Register 15600 uses complete 16-bit control words:
@@ -23,7 +23,7 @@ class Charger2SystemSwitchField(DeviceField):
     """
 
     def __init__(self, name: FieldName, address: int):
-        super().__init__(name, address, 1)
+        super().__init__(name, address)
 
     def parse(self, data: bytes) -> bool:
         value = struct.unpack("!H", data)[0]

@@ -1,6 +1,9 @@
+import struct
+
 from ..base_devices import BaseDeviceV2
 from ..bluetooth import ReadableRegisters
 from ..fields import (
+    DeviceField,
     FieldName,
     UIntField,
     DecimalField,
@@ -8,6 +11,38 @@ from ..fields import (
     SerialNumberField,
     SignedDecimalField,
 )
+from ..registers import WriteableRegister
+
+
+class Charger2SystemSwitchField(DeviceField):
+    """Charger 2 system on/off control.
+
+    Register 15600 uses complete 16-bit control words:
+        0x5529 = ON
+        0xAA2A = OFF
+    """
+
+    def __init__(self, name: FieldName, address: int):
+        super().__init__(name, address, 1)
+
+    def parse(self, data: bytes) -> bool:
+        value = struct.unpack("!H", data)[0]
+
+        if value == 0x5529:
+            return True
+
+        if value == 0xAA2A:
+            return False
+
+        raise ValueError(
+            f"Unexpected Charger 2 system switch value: 0x{value:04X}"
+        )
+
+    def is_writeable(self) -> bool:
+        return True
+
+    def allowed_write_type(self, value) -> bool:
+        return isinstance(value, bool)
 
 
 class CHARGER2(BaseDeviceV2):
@@ -30,10 +65,24 @@ class CHARGER2(BaseDeviceV2):
                 DecimalField(FieldName.B_ALT_CURRENT, 15540, 2),
                 DecimalField(FieldName.B_ALT_IO_POWER, 15542, 0),
 
+                Charger2SystemSwitchField(
+                    FieldName.CTRL_SYSTEM_ON_OFF,
+                    15600,
+                ),
+
                 SwapStringField(FieldName.DEVICE_TYPE, 15500, 6),
                 SerialNumberField(FieldName.DEVICE_SN, 15506),
             ],
         )
+
+    def build_write_command(self, name: str, value):
+        if name == FieldName.CTRL_SYSTEM_ON_OFF.value:
+            return WriteableRegister(
+                15600,
+                0x5529 if value else 0xAA2A,
+            )
+
+        return super().build_write_command(name, value)
 
     def get_device_type_registers(self):
         return [

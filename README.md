@@ -4,6 +4,8 @@ Core functions based on https://github.com/warhammerkid/bluetti_mqtt
 
 The current [Roadmap for this project and repositories using this library can be found here](https://github.com/users/Patrick762/projects/4)
 
+Home Assistant Integration [can be found here](https://github.com/sidieje/hassio-bluetti-bt)
+
 ## Disclaimer
 This library is provided without any warranty or support by Bluetti. I do not take responsibility for any problems it may cause in all cases. Use it at your own risk.
 

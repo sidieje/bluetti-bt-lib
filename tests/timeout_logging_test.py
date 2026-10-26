@@ -96,6 +96,31 @@ class WrongAnswerMock(TruncatedMock):
     truncate = False
 
 
+class StrayByteMock(ClientMockNoEncryption):
+    """Answers the requests numbered in at with junk bytes in front of the frame.
+
+    Seen on an AC300: a byte turns up in the notify stream that belongs to no
+    request, and the answer that follows it is shifted along by that much.
+    """
+
+    def __init__(self, at: set[int], junk: bytes = b"\x41") -> None:
+        super().__init__()
+        self.at = at
+        self.junk = junk
+        self.requests = 0
+
+    async def write_gatt_char(self, char_specifier, data, response=None) -> None:
+        self.requests += 1
+        if self.requests not in self.at or self._callback is None:
+            await super().write_gatt_char(char_specifier, data, response)
+            return
+
+        # The junk arrives as a notification of its own, which is how it shows up
+        # on a station: the reader only sees the two together in its buffer.
+        await self._callback(char_specifier, bytearray(self.junk))
+        await super().write_gatt_char(char_specifier, data, response)
+
+
 class TestTimeoutLogging(unittest.IsolatedAsyncioTestCase):
     def make_reader(self, ble_mock: ClientMockNoEncryption) -> DeviceReader:
         return DeviceReader(
@@ -185,9 +210,14 @@ class TestTimeoutLogging(unittest.IsolatedAsyncioTestCase):
                 data = await reader.read()
 
         self.assertIsNone(data)
-        self.assertEqual(self.levels(logs, "No valid response"), [logging.WARNING])
-        self.assertEqual(len(self.aborted(logs)), 1)
         self.assertEqual(self.levels(logs, "Read aborted"), [logging.WARNING])
+        # One line per abort, not one for the request and one for the cycle: the
+        # warning carries the timeout, the link state and what the station sent.
+        line = self.aborted(logs)[0]
+        self.assertIn("within", line)
+        self.assertIn("client connected: True", line)
+        self.assertIn("the station sent nothing", line)
+        self.assertEqual(self.levels(logs, "No valid response"), [logging.DEBUG])
 
     async def test_a_station_that_sends_nothing_says_so(self):
         # "No valid response" used to be the whole story, which left a station
@@ -263,6 +293,74 @@ class TestTimeoutLogging(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("cycles in a row", self.aborted(logs)[0])
         self.assertIn("2 cycles in a row with an abort", self.aborted(logs)[1])
         self.assertEqual(reader.link_stats.abort_streak, 1)
+
+    async def test_a_repeated_fault_of_a_kind_warns_once(self):
+        # A tower that does this every forty minutes is a quirk of that station,
+        # not forty problems. The first one of a kind warns, the rest wait.
+        reader = self.make_reader(DeafMock({2, 3, 5, 6}))
+
+        with self.fast_timing():
+            with self.assertLogs(reader.logger, level="DEBUG") as logs:
+                await reader.read()
+                await reader.read()
+
+        self.assertEqual(
+            self.levels(logs, "Read aborted"), [logging.WARNING, logging.DEBUG]
+        )
+
+    async def test_the_next_warning_says_what_was_held_back(self):
+        # Nothing is hidden for good: once the window passes, the next loud one
+        # carries a tally of the quiet ones from inside it.
+        reader = self.make_reader(DeafMock({2, 3, 5, 6, 8, 9}))
+
+        with self.fast_timing():
+            with self.assertLogs(reader.logger, level="DEBUG") as logs:
+                await reader.read()  # the first one of a kind speaks up
+                await reader.read()  # the same fault again is held back
+                with patch.object(device_reader, "ABORT_REPORT_WINDOW_SECONDS", 0.0):
+                    await reader.read()  # out of the window, and it says why
+
+        self.assertEqual(
+            self.levels(logs, "Read aborted"),
+            [logging.WARNING, logging.DEBUG, logging.WARNING],
+        )
+        warnings = [
+            record.getMessage()
+            for record in logs.records
+            if record.levelno == logging.WARNING
+            and "Read aborted" in record.getMessage()
+        ]
+        self.assertNotIn("since the last warning", warnings[0])
+        self.assertIn("1 more the same way since the last warning", warnings[1])
+
+    async def test_an_answer_shifted_by_a_stray_byte_is_recovered(self):
+        # The AC300 slips a byte into the stream. The answer behind it is whole
+        # and CRC-correct, only one byte away from where the reader looks for it,
+        # and used to cost a cycle of data and two warnings.
+        reader = self.make_reader(StrayByteMock({2}))
+
+        with self.fast_timing():
+            with self.assertLogs(reader.logger, level="DEBUG") as logs:
+                data = await reader.read()
+
+        self.assertIsNotNone(data)
+        self.assertEqual(reader.link_stats.shifted, 1)
+        self.assertIn("Recovered the answer", self.joined(logs))
+        self.assertEqual(self.aborted(logs), [])
+
+    async def test_junk_that_leaves_no_clean_answer_is_still_discarded(self):
+        # Re-anchoring may only land on a run of bytes that is exactly one answer
+        # long. More junk than that is still reported as a bad frame.
+        reader = self.make_reader(StrayByteMock({2, 3}, junk=b"\x41\x42\x43\x44\x45"))
+
+        with self.fast_timing():
+            with self.assertLogs(reader.logger, level="DEBUG") as logs:
+                data = await reader.read()
+
+        self.assertIsNone(data)
+        self.assertEqual(reader.link_stats.failure, "mismatch")
+        self.assertEqual(reader.link_stats.shifted, 0)
+        self.assertIn("Discarding response that does not match", self.joined(logs))
 
     async def test_a_slow_answer_is_noticed(self):
         # A station that is about to stop answering usually answers late first,

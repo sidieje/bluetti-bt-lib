@@ -254,6 +254,24 @@ the same request. Writes are never sent twice. A cycle the retry saved is not
 logged as a warning at all, and the probe prints how many requests had to be
 asked twice and how many of those answered the second time.
 
+A frame that arrives with junk in front of it is a different fault. The older
+towers are seen to slip a byte into the notify stream, which shifts a complete
+answer along: the buffer is then one byte longer than the answer, nothing lines
+up, and what gets thrown away is a frame that was answered correctly. The reader
+drops up to `STRAY_BYTES_TOLERATED` bytes from the front and re-checks what is
+left, which still has to pass length, slave address, function code, byte count and
+CRC. Only a shift that leaves exactly one answer behind counts, so a buffer
+holding two frames is still discarded rather than guessed at. The probe counts
+these as `shifted`.
+
+Reporting is sized to the fault rather than to the read. One bad cycle used to
+cost two warnings saying nearly the same thing, and a station that misbehaves the
+same way every forty minutes produced a pair of them each time. A cycle that was
+cut short is now reported once, and a fault of a kind that has already been
+reported stays at DEBUG for `ABORT_REPORT_WINDOW_SECONDS`; the next warning of
+that kind says how many were held back. A link that has never answered yet stays
+quiet, because a station that is still waking misses its first request.
+
 ## Adding fields
 
 To add new fields, you can use the `bluetti-detect` command to first find out which version of iot protocol is used and if it uses encryption.

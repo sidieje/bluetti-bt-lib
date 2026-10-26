@@ -54,6 +54,18 @@ SLOW_REQUEST_SECONDS = 1.5
 # reply to an earlier request from noise.
 RX_SAMPLE_BYTES = 12
 
+# How many stray bytes to tolerate in front of an answer. The older towers (the
+# AC300 among them) are seen to slip a byte into the notify stream, which shifts
+# a complete answer along: the buffer then matches no request, and what gets
+# thrown away is a frame that was answered correctly.
+STRAY_BYTES_TOLERATED = 4
+
+# How long to stay quiet about a read fault that has already been reported. A
+# station that misbehaves the same way every 45 minutes has a quirk rather than
+# a problem, and each occurrence does not need its own warning: the ones held
+# back are counted and ride along on the next one.
+ABORT_REPORT_WINDOW_SECONDS = 3600
+
 
 class ResponseTimeout(Exception):
     """No valid answer to a request arrived in time.
@@ -108,6 +120,8 @@ class LinkStats:
     """Reads in this cycle that were sent a second time."""
     recovered: int = 0
     """Reads in this cycle that only answered on the second attempt."""
+    shifted: int = 0
+    """Answers rescued by dropping stray bytes from in front of the frame."""
     abort_streak: int = 0
     """Cycles in a row that had an abort, not counting the one in progress."""
 
@@ -176,6 +190,12 @@ class DeviceReader:
         self._retry_pending = False
         """Set while a read is being asked for a second time, so the answer can
         be counted as a recovery rather than a plain answer."""
+        self._fault = ""
+        """The kind of read fault last reported at WARNING."""
+        self._fault_reported_at = 0.0
+        """When that fault was reported, for the report window."""
+        self._fault_suppressed = 0
+        """Aborts of that kind held back since it was reported."""
         # MODBUS bytes and notification frames seen about the request in
         # flight, so a timeout can say whether the station stayed quiet or
         # answered something that was not usable. _rx_unexpected keeps the start
@@ -184,7 +204,7 @@ class DeviceReader:
 
     async def connect(self) -> bool:
         """Establish a persistent connection to the device.
-        
+
         Note: This method should be called while holding the polling_lock
         to avoid race conditions. The read() method handles this automatically.
         """
@@ -719,7 +739,7 @@ class DeviceReader:
                 # this request may still arrive and would be read as the answer
                 # to the next one, which is how a register ends up holding the
                 # value of a different register.
-                self._log_timeout("Read aborted: %s%s", err, self._cycle_note())
+                self._log_abort(err)
                 await self._resync_link()
                 return None
             except TimeoutError:
@@ -800,7 +820,7 @@ class DeviceReader:
             # Same reasoning as read(): a write verification read-back that
             # gets no valid answer must not be followed by another command on
             # a link that may still be carrying a late answer.
-            self._log_timeout("Read aborted: %s%s", err, self._cycle_note())
+            self._log_abort(err)
             await self._resync_link()
             return None
         except TimeoutError:
@@ -821,15 +841,54 @@ class DeviceReader:
 
         return parsed_data or None
 
-    def _log_timeout(self, message: str, *args: Any) -> None:
-        """Report a request that went unanswered.
+    def _log_abort(self, err: ResponseTimeout) -> None:
+        """Report a read cycle that was cut short, once per fault.
 
-        The first request on a fresh connection is the one a waking station
-        tends to miss, which is normal and not worth a warning. Once the
-        connection has been answering, a missing answer is news.
+        The request that timed out and the cycle that was given up on used to be
+        reported separately, so one bad read cost two warnings saying the same
+        thing. One line carries both now.
+
+        A fault that repeats is a quirk of the station rather than news, so the
+        first of a kind warns and the rest are held back for
+        ABORT_REPORT_WINDOW_SECONDS, counted, and reported with the next warning.
+        A link that has never answered yet stays quiet: a station that is still
+        waking misses its first request, which is normal.
         """
+        kind = self.link_stats.failure or "unknown"
+        now = time.monotonic()
+
+        level = logging.WARNING
+        held = 0
+        if not self._answered:
+            # A station that is still waking misses its first request, which is
+            # normal and not worth alarming anyone about.
+            level = logging.DEBUG
+        elif (
+            kind == self._fault
+            and now - self._fault_reported_at < ABORT_REPORT_WINDOW_SECONDS
+        ):
+            self._fault_suppressed += 1
+            level = logging.DEBUG
+        else:
+            held = self._fault_suppressed
+            self._fault, self._fault_reported_at = kind, now
+            self._fault_suppressed = 0
+
+        extra = ""
+        if held:
+            extra = f" [{held} more the same way since the last warning]"
+
+        detail = f": {err.detail}" if err.detail else ""
         self.logger.log(
-            logging.WARNING if self._answered else logging.DEBUG, message, *args
+            level,
+            "Read aborted: no valid response to %s within %ss"
+            " (client connected: %s)%s%s%s",
+            err.registers,
+            RESPONSE_TIMEOUT_SECONDS,
+            self.client.is_connected if self.client else False,
+            detail,
+            self._cycle_note(),
+            extra,
         )
 
     def _begin_cycle(self) -> None:
@@ -853,6 +912,7 @@ class DeviceReader:
         stats.attempts = 0
         stats.retried = 0
         stats.recovered = 0
+        stats.shifted = 0
         self._retry_pending = False
 
     def _record_answer(self, registers: DeviceRegister, elapsed: float) -> None:
@@ -1047,7 +1107,9 @@ class DeviceReader:
             stats.sample = self._rx_sample()
             self._cycle_aborted = True
 
-            self._log_timeout(
+            # The warning is the caller's, which can say what the abort cost;
+            # this is the detail line that goes with it.
+            self.logger.debug(
                 "No valid response to %s within %ss (client connected: %s): %s",
                 registers,
                 RESPONSE_TIMEOUT_SECONDS,
@@ -1287,6 +1349,27 @@ class DeviceReader:
 
         if len(response) == size and registers.is_valid_response(response):
             self.notify_future.set_result(response)
+            return
+
+        # A stray byte in front of a real answer shifts it along, so the buffer
+        # is longer than the answer and nothing lines up. Drop the junk and
+        # re-check what is left: it still has to pass length, slave address,
+        # function code, byte count and CRC. Only a shift that leaves exactly one
+        # answer behind counts, so a buffer holding two frames is still discarded
+        # rather than guessed at.
+        for junk in range(1, STRAY_BYTES_TOLERATED + 1):
+            shifted = response[junk:]
+            if len(shifted) != size or not registers.is_valid_response(shifted):
+                continue
+
+            self.logger.debug(
+                "Recovered the answer to %s by dropping %d stray byte(s) (%s)",
+                registers,
+                junk,
+                response[:junk].hex(),
+            )
+            self.link_stats.shifted += 1
+            self.notify_future.set_result(shifted)
             return
 
         # Not the answer to this request: a late answer to an earlier one, a

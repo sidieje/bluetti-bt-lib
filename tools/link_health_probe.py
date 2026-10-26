@@ -65,6 +65,7 @@ async def run_rounds(reader: DeviceReader, args) -> None:
     times: list[float] = []
     retried = 0
     recovered = 0
+    shifted = 0
 
     for round_number in range(1, args.rounds + 1):
         walk_packs = args.packs_every >= 1 and (
@@ -79,6 +80,7 @@ async def run_rounds(reader: DeviceReader, args) -> None:
         stats = reader.link_stats
         retried += stats.retried
         recovered += stats.recovered
+        shifted += stats.shifted
         if data is None:
             ok_or_not = "ABORT "
             failures[f"{stats.aborted} [{stats.failure}]"] += 1
@@ -91,10 +93,11 @@ async def run_rounds(reader: DeviceReader, args) -> None:
 
         slow = f"  slowest {stats.slowest:.2f}s" if stats.slowest else ""
         asks = f"  {stats.retried} asked again" if stats.retried else ""
+        rescued = f"  {stats.shifted} shifted" if stats.shifted else ""
         print(
             f"[{round_number:>3}] {elapsed:5.2f}s  {ok_or_not}"
             f"  {stats.answered}/{stats.requests} requests"
-            f"{'' if walk_packs else '  no pack walk'}{slow}{asks}"
+            f"{'' if walk_packs else '  no pack walk'}{slow}{asks}{rescued}"
             + (_stats_line(reader) if data is None else "")
         )
 
@@ -112,6 +115,10 @@ async def run_rounds(reader: DeviceReader, args) -> None:
     if retried:
         # How much of the dropped-request problem the second ask is covering for.
         print(f"{retried} requests asked for again, {recovered} answered the second time")
+    if shifted:
+        # A station that slips bytes into the stream answers correctly more often
+        # than its warnings suggest; this is how much of that the reader kept.
+        print(f"{shifted} answers rescued by dropping stray bytes from in front")
     if worst_streak:
         print(f"longest run of cut-short cycles: {worst_streak}")
     if failures:

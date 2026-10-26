@@ -53,6 +53,7 @@ Added and mostly validated by contributors (some are moved here from the HA Inte
 |EP500P     |bluetti-mqtt                                                                           |✅                   |✅             |✅             |✅             |✅             |
 |EP760      |[@Apfuntimes](https://github.com/Apfuntimes)                                           |✅                   |PV             |Grid           |❌             |AC Phases      |
 |EP800      |[@jhagenk](https://github.com/jhagenk)                                                 |✅                   |❌             |❌             |❌             |❌             |
+|FP         |[@rgw3d](https://github.com/rgw3d), [@madsciencetist](https://github.com/madsciencetist)|✅                   |✅             |✅             |✅             |✅             |
 |Handsfree 2|[@pablogiaccaglia](https://github.com/pablogiaccaglia)                                 |✅                   |✅             |✅             |✅             |✅             |
 |PR30V2     |@gentoo90                                                                              |✅                   |✅             |✅             |✅             |✅             |
 |PR100V2    |shares PR30V2 register layout (pending validation)                                     |✅                   |✅             |✅             |✅             |✅             |
@@ -87,6 +88,7 @@ Added and mostly validated by contributors (some are moved here from the HA Inte
 |EP500      |✅     |✅     |✅           |✅             |✅             |❌                |
 |EP500P     |✅     |✅     |✅           |✅             |✅             |❌                |
 |EP600      |✅     |❌     |❌           |✅             |✅             |❌                |
+|FP         |✅     |✅     |✅           |❌             |❌             |❌                |
 |Handsfree 1|✅     |✅     |❌           |❌             |❌             |❌                |
 |Handsfree 2|✅     |✅     |❌           |❌             |❌             |❌                |
 
@@ -97,6 +99,11 @@ Elite portables, but they are only writable where an owner has confirmed the
 Bluetti app offers them, and the ranges differ per model: 5-20 W on DC and
 10-40 W on AC for the AP300, EL100 mini, EL100 V2, EL30 V2, EL200 V2 and
 EL300, and 5-10 W / 15-30 W on the EL10.
+
+The FridgePower exposes its charge limits (2022, 2023) and eco thresholds
+(2016, 2019) as read-only registers: an owner watched them follow the app, but
+the ranges the app accepts were never recorded for this unit, so nothing here
+writes them.
 
 The Charger 2 carries a different set of switches, so it gets its own table:
 

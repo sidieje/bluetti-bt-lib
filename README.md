@@ -32,6 +32,7 @@ Added and mostly validated by contributors (some are moved here from the HA Inte
 |-----------|---------------------------------------------------------------------------------------|---------------------|---------------|---------------|---------------|---------------|
 |AC2A       |[@ruanmed](https://github.com/ruanmed)                                                 |✅                   |✅             |✅             |✅             |✅             |
 |AC50B      |[@goetzc](https://github.com/goetzc), [@Patrick762](https://github.com/Patrick762)     |✅                   |✅             |✅             |✅             |✅             |
+|AC50P      |[@oliren](https://github.com/oliren)                                                   |✅                   |✅             |✅             |✅             |✅             |
 |AC60       |[@mzpwr](https://github.com/mzpwr)                                                     |✅                   |✅             |✅             |✅             |✅             |
 |AC60P      |[@mzpwr](https://github.com/mzpwr)                                                     |✅                   |✅             |✅             |✅             |✅             |
 |AC70P      |[@matthewpucc](https://github.com/matthewpucc)                                         |✅                   |✅             |✅             |✅             |✅             |
@@ -74,6 +75,7 @@ Added and mostly validated by contributors (some are moved here from the HA Inte
 |AC200PL    |✅     |✅     |❌           |❌             |❌             |❌                |
 |AC300      |✅     |✅     |✅           |✅             |✅             |❌                |
 |AC500      |✅     |✅     |✅           |✅             |✅             |❌                |
+|AC50P      |✅     |✅     |❌           |❌             |❌             |❌                |
 |AP300      |✅     |✅     |✅           |✅             |✅             |✅                |
 |EB3A       |✅     |✅     |❌           |❌             |❌             |❌                |
 |EL10       |✅     |✅     |❌           |❌             |❌             |✅                |

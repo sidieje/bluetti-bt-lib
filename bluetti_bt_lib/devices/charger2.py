@@ -87,8 +87,11 @@ class CHARGER2(BaseDeviceV2):
                 UIntField(FieldName.BATTERY_SOC, 15584),
 
                 DecimalField(FieldName.B_ALT_VOLTAGE, 15539, 1),
-                DecimalField(FieldName.B_ALT_CURRENT, 15540, 2),
-                DecimalField(FieldName.B_ALT_IO_POWER, 15542, 0),
+                # Starter battery side: positive while the vehicle (alternator)
+                # charges through the Charger 2, negative while reverse
+                # charging feeds the starter battery.
+                SignedDecimalField(FieldName.B_ALT_CURRENT, 15540, 2),
+                SignedDecimalField(FieldName.B_ALT_IO_POWER, 15542, 0),
 
                 Charger2SystemSwitchField(
                     FieldName.CTRL_SYSTEM_ON_OFF,

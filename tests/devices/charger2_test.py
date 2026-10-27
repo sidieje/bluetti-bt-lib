@@ -1,5 +1,7 @@
 import unittest
 
+from decimal import Decimal
+
 from bluetti_bt_lib.devices.charger2 import (
     CHARGER2,
     Charger2SilentChargingField,
@@ -129,6 +131,25 @@ class TestCharger2(unittest.TestCase):
             with self.subTest(field=field_name):
                 with self.assertRaises(ValueError):
                     self.device.build_write_command(field_name, True)
+
+    def test_starter_battery_values_are_signed(self):
+        # Reverse charging read 0xFCE0 (15540) and 0xFF9C (15542): -8 A, -100 W.
+        # From the alternator they are positive: 59.84 A, 778 W.
+        cases = {
+            (15540, "FCE0"): Decimal("-8.00"),
+            (15542, "FF9C"): Decimal("-100"),
+            (15540, "1760"): Decimal("59.84"),
+            (15542, "030A"): Decimal("778"),
+        }
+        names = {
+            15540: FieldName.B_ALT_CURRENT.value,
+            15542: FieldName.B_ALT_IO_POWER.value,
+        }
+
+        for (address, hex_value), expected in cases.items():
+            with self.subTest(address=address, register_value=hex_value):
+                parsed = self.device.parse(address, bytes.fromhex(hex_value))
+                self.assertEqual(parsed[names[address]], expected)
 
 
 if __name__ == "__main__":

@@ -46,6 +46,65 @@ class TestCharger2(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.silent_field.parse(data)
 
+    def test_unknown_control_word_skips_only_the_controls(self):
+        # A station that reads 0x001E at 15600 for a minute after a hard
+        # disconnect must not lose the whole cycle, only the two controls.
+        with self.assertLogs("bluetti_bt_lib.base_devices.bluetti_device", "WARNING") as logs:
+            parsed = self.device.parse(15600, bytes.fromhex("001E"))
+        self.assertEqual(parsed, {})
+        self.assertEqual(len(logs.records), 2)
+        self.assertIn("0x001E", logs.output[0])
+
+    def test_the_same_unknown_value_warns_once(self):
+        # Polled every 20 s, a station that sits on 0x001E for a minute would
+        # repeat the same two warnings on every poll. The first poll warns,
+        # the ones after it are DEBUG.
+        logger = "bluetti_bt_lib.base_devices.bluetti_device"
+        with self.assertLogs(logger, "DEBUG") as logs:
+            for _ in range(3):
+                self.assertEqual(self.device.parse(15600, bytes.fromhex("001E")), {})
+
+        skips = [r for r in logs.records if "Skipping" in r.getMessage()]
+        self.assertEqual(
+            [r.levelname for r in skips], ["WARNING"] * 2 + ["DEBUG"] * 4
+        )
+
+    def test_a_different_unknown_value_warns_again(self):
+        logger = "bluetti_bt_lib.base_devices.bluetti_device"
+        with self.assertLogs(logger, "DEBUG") as logs:
+            self.device.parse(15600, bytes.fromhex("001E"))
+            self.device.parse(15600, bytes.fromhex("001E"))
+            self.device.parse(15600, bytes.fromhex("001F"))
+
+        warnings = [r.getMessage() for r in logs.records if r.levelname == "WARNING"]
+        self.assertEqual(len(warnings), 4)
+        self.assertIn("0x001F", warnings[2])
+        self.assertIn("1 more skipped reads of the previous value", warnings[2])
+
+    def test_an_unknown_value_warns_again_after_a_known_one(self):
+        # Once the field parses again it starts over: the same fault later on
+        # is news again.
+        logger = "bluetti_bt_lib.base_devices.bluetti_device"
+        with self.assertLogs(logger, "DEBUG") as logs:
+            self.device.parse(15600, bytes.fromhex("001E"))
+            parsed = self.device.parse(15600, bytes.fromhex("5529"))
+            self.device.parse(15600, bytes.fromhex("001E"))
+
+        self.assertEqual(parsed[FieldName.CTRL_SYSTEM_ON_OFF.value], True)
+        warnings = [r for r in logs.records if r.levelname == "WARNING"]
+        self.assertEqual(len(warnings), 4)
+        self.assertIn("parses again", logs.output[2])
+
+    def test_known_control_word_still_parses_both_controls(self):
+        parsed = self.device.parse(15600, bytes.fromhex("5529"))
+        self.assertEqual(
+            parsed,
+            {
+                FieldName.CTRL_SYSTEM_ON_OFF.value: True,
+                FieldName.CTRL_SILENT_CHARGING.value: False,
+            },
+        )
+
     def test_both_controls_are_classified_as_switches(self):
         switch_fields = [
             field.name for field in self.device.get_switch_fields()

@@ -65,6 +65,8 @@ async def run_rounds(reader: DeviceReader, args) -> None:
     times: list[float] = []
     retried = 0
     recovered = 0
+    drained = 0
+    discarded = 0
 
     for round_number in range(1, args.rounds + 1):
         walk_packs = args.packs_every >= 1 and (
@@ -79,6 +81,8 @@ async def run_rounds(reader: DeviceReader, args) -> None:
         stats = reader.link_stats
         retried += stats.retried
         recovered += stats.recovered
+        drained += stats.drained
+        discarded += stats.discarded
         if data is None:
             ok_or_not = "ABORT "
             failures[f"{stats.aborted} [{stats.failure}]"] += 1
@@ -91,6 +95,8 @@ async def run_rounds(reader: DeviceReader, args) -> None:
 
         slow = f"  slowest {stats.slowest:.2f}s" if stats.slowest else ""
         asks = f"  {stats.retried} asked again" if stats.retried else ""
+        if stats.drained:
+            asks += f", {stats.drained} drained ({stats.discarded} discarded)"
         print(
             f"[{round_number:>3}] {elapsed:5.2f}s  {ok_or_not}"
             f"  {stats.answered}/{stats.requests} requests"
@@ -112,6 +118,10 @@ async def run_rounds(reader: DeviceReader, args) -> None:
     if retried:
         # How much of the dropped-request problem the second ask is covering for.
         print(f"{retried} requests asked for again, {recovered} answered the second time")
+    if drained:
+        # How often the reader waited for a second answer after a retry, and
+        # how often one that differed from the first actually turned up.
+        print(f"{drained} drains after a retry, {discarded} stray answers discarded")
     if worst_streak:
         print(f"longest run of cut-short cycles: {worst_streak}")
     if failures:

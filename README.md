@@ -251,10 +251,16 @@ both ways is that register. `--packs-every N` walks the pack slots every Nth
 round, which is how a device with battery packs is tested with and without them.
 
 A read that goes unanswered is asked for once more before the cycle is given up
-on. The second ask is only safe for reads: a late answer to the first one answers
-the same request. Writes are never sent twice. A cycle the retry saved is not
-logged as a warning at all, and the probe prints how many requests had to be
-asked twice and how many of those answered the second time.
+on. Writes are never sent twice. A station that was only slow then answers both
+asks: the first answer settles the read, and the second is still on its way. A
+function 03 answer does not say which register it is for, so the reader waits up
+to `STRAY_ANSWER_SECONDS` for that second answer and throws it away before it
+asks anything else; otherwise the next read of the same size would take it for
+its own. A cycle the retry saved is not logged as a warning at all, and the
+probe prints how many requests had to be asked twice, how many of those answered
+the second time, how often the reader waited for a second answer (`drained`) and
+how often one that differed from the first arrived and was thrown away
+(`discarded`).
 
 ## Adding fields
 

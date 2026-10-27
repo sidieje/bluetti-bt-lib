@@ -139,6 +139,11 @@ class LinkStats:
     """Stray second answers the drain actually caught and threw away. A second
     answer identical to the first is dropped earlier by the duplicate filter in
     _notification_handler and is not counted here."""
+    repeats: int = 0
+    """Notifications dropped by that duplicate filter in this cycle. On a
+    station that repeats frames (the AP300) this is normal traffic. It is also
+    the only sign that an identical second answer arrived, which is why a drain
+    can report discarded=0 and still have been needed."""
     abort_streak: int = 0
     """Cycles in a row that had an abort, not counting the one in progress."""
 
@@ -936,6 +941,7 @@ class DeviceReader:
         stats.shifted = 0
         stats.drained = 0
         stats.discarded = 0
+        stats.repeats = 0
         self._retry_pending = False
 
     def _record_answer(self, registers: DeviceRegister, elapsed: float) -> None:
@@ -1072,6 +1078,17 @@ class DeviceReader:
         is what keeps it away from the next request, which would accept it
         since _send_once() clears last_notification. Only an answer that
         differs is collected here, and that ends the wait early.
+
+        That costs the full STRAY_ANSWER_SECONDS whenever the two answers match,
+        and it is tempting to stop as soon as the filter reports a duplicate.
+        That is not safe. On a station that repeats frames (the Apex 300) the
+        duplicate dropped during a drain can be a repeat of the FIRST answer,
+        and a repeat can land after any quiet period short of that station's
+        repeat gap. The next request then takes it for its own answer, which is
+        the fault the drain exists to prevent; see
+        test_a_repeating_station_holds_the_drain_for_the_full_window. Stopping
+        early would need a quiet period longer than every repeat gap the station
+        has, and no station has been measured for one.
 
         How this relates to _resync_link(): both deal with an answer that is
         still on its way to a request nobody is waiting for. _resync_link()
@@ -1253,6 +1270,7 @@ class DeviceReader:
         notification = bytes(data)
         if notification == self.last_notification and not self.notify_response:
             self.logger.debug("Duplicate notification ignored")
+            self.link_stats.repeats += 1
             return
         self.last_notification = notification
 

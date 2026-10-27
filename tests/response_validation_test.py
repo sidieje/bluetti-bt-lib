@@ -98,12 +98,16 @@ class LateMock(ClientMockNoEncryption):
     answered twice.
     """
 
-    def __init__(self, latency: float, first: list[float] | None = None) -> None:
+    def __init__(self, latency: float, first: list[float] | None = None,
+                 repeats: int = 0, repeat_gap: float = 0.0) -> None:
         super().__init__()
         self.latency = latency
         self.first = list(first or [])
+        self.repeats = repeats
+        self.repeat_gap = repeat_gap
         self.commands: list[bytes] = []
         self.tasks: list[asyncio.Task] = []
+        self.delivered: list[bytes] = []
 
     async def write_gatt_char(self, char, data, response=None) -> None:
         request = bytes(data)
@@ -124,7 +128,15 @@ class LateMock(ClientMockNoEncryption):
             await asyncio.sleep(delay)
             for answer in answers:
                 if self._callback is not None:
+                    self.delivered.append(bytes(answer))
                     await self._callback(char, bytearray(answer))
+            for _ in range(self.repeats):
+                # A station that repeats frames sends the same answer again
+                # some time after it, which is what the duplicate filter is for.
+                await asyncio.sleep(self.repeat_gap)
+                for answer in answers:
+                    if self._callback is not None:
+                        await self._callback(char, bytearray(answer))
 
         self.tasks.append(asyncio.create_task(later()))
 
@@ -146,6 +158,19 @@ class ChangingLateMock(LateMock):
     async def write_gatt_char(self, char, data, response=None) -> None:
         if bytes(data) in self.commands:
             self.add_r_int(self.register, self.new_value)
+        await super().write_gatt_char(char, data, response)
+
+
+class OneAnswerOnlyMock(LateMock):
+    """A LateMock that answers the first ask of a retry and ignores the second.
+
+    The retry is the identical request, so a station that has already answered
+    once stays silent: the drain then has nothing to wait for.
+    """
+
+    async def write_gatt_char(self, char, data, response=None) -> None:
+        if bytes(data) in self.commands:
+            return
         await super().write_gatt_char(char, data, response)
 
 
@@ -181,10 +206,11 @@ class TestSecondAnswerToARetry(unittest.IsolatedAsyncioTestCase):
             elapsed = asyncio.get_running_loop().time() - started
             drained = reader.link_stats.drained
             discarded = reader.link_stats.discarded
+            repeats = reader.link_stats.repeats
             second = await reader.read_locked(
                 [ReadableRegisters(PACK_NUM_REGISTER + 1, 1)], raw=True
             )
-        return first, second, elapsed, drained, discarded
+        return first, second, elapsed, drained, discarded, repeats
 
     async def test_a_differing_second_answer_is_discarded(self):
         # The case the duplicate filter cannot cover: the register changed
@@ -194,7 +220,7 @@ class TestSecondAnswerToARetry(unittest.IsolatedAsyncioTestCase):
         reader = self.make_reader(ble_mock)
 
         with self.assertLogs(reader.logger, level="DEBUG") as logs:
-            first, second, elapsed, drained, discarded = await self.read_both(
+            first, second, elapsed, drained, discarded, _ = await self.read_both(
                 reader, stray_seconds=3
             )
 
@@ -220,7 +246,7 @@ class TestSecondAnswerToARetry(unittest.IsolatedAsyncioTestCase):
 
         reader._drain_stray_answer = no_drain
 
-        first, second, _, _, _ = await self.read_both(reader, stray_seconds=3)
+        first, second, _, _, _, _ = await self.read_both(reader, stray_seconds=3)
 
         self.assertEqual(first, {PACK_NUM_REGISTER: b"\x00\x04"})
         self.assertEqual(second, {PACK_NUM_REGISTER + 1: b"\x00\x05"})
@@ -282,6 +308,72 @@ class TestSecondAnswerToARetry(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(values, {PACK_NUM_REGISTER: b"\x00\x04"})
         self.assertEqual(drained, [])
         self.assertEqual(reader.link_stats.drained, 0)
+        await asyncio.gather(*ble_mock.tasks)
+
+    async def test_a_second_answer_identical_to_the_first_is_swallowed(self):
+        # The register did not change between the two asks, so the second
+        # answer is byte for byte the first and the duplicate filter drops it
+        # instead of the drain collecting it. discarded=0 here does not mean
+        # there was no second answer, which is what the repeats counter is for.
+        ble_mock = LateMock(latency=0.25, first=[0.45])
+        ble_mock.add_r_int(PACK_NUM_REGISTER, 4)
+        ble_mock.add_r_int(PACK_NUM_REGISTER + 1, 7)
+        reader = self.make_reader(ble_mock)
+
+        first, second, elapsed, drained, discarded, repeats = await self.read_both(
+            reader, stray_seconds=1
+        )
+
+        self.assertEqual(first, {PACK_NUM_REGISTER: b"\x00\x04"})
+        self.assertEqual(second, {PACK_NUM_REGISTER + 1: b"\x00\x07"})
+        self.assertEqual((drained, discarded), (1, 0))
+        self.assertEqual(repeats, 1)
+        # The filter caught it, but the window still ran.
+        self.assertGreaterEqual(elapsed, 1)
+        await asyncio.gather(*ble_mock.tasks)
+
+    async def test_a_repeating_station_holds_the_drain_for_the_full_window(self):
+        # The Apex 300 delivers most frames two or three times. A repeat can
+        # land after the answer to the second ask, so a drain that stopped at
+        # the first duplicate it saw would leave the next request to take a
+        # later repeat for its own answer.
+        ble_mock = LateMock(latency=0.25, first=[0.45], repeats=1, repeat_gap=0.65)
+        ble_mock.add_r_int(PACK_NUM_REGISTER, 4)
+        ble_mock.add_r_int(PACK_NUM_REGISTER + 1, 7)
+        reader = self.make_reader(ble_mock)
+
+        first, second, elapsed, drained, discarded, repeats = await self.read_both(
+            reader, stray_seconds=1
+        )
+
+        self.assertEqual(first, {PACK_NUM_REGISTER: b"\x00\x04"})
+        # The repeats land 0.65s after their answers, later than any short
+        # quiet period would wait, so it is the full window that keeps 97
+        # reading its own 7 rather than the 4 meant for 96.
+        self.assertEqual(second, {PACK_NUM_REGISTER + 1: b"\x00\x07"})
+        self.assertEqual((drained, discarded), (1, 0))
+        self.assertGreaterEqual(repeats, 2)
+        self.assertGreaterEqual(elapsed, 1)
+        await asyncio.gather(*ble_mock.tasks)
+
+    async def test_a_drain_with_nothing_incoming_still_waits_the_full_window(self):
+        # Nothing arrives at all: the drain has no evidence either way, so it
+        # runs the whole STRAY_ANSWER_SECONDS rather than assuming the station
+        # is silent. This is the case the repeats counter cannot cover.
+        ble_mock = OneAnswerOnlyMock(latency=0.25, first=[0.45])
+        ble_mock.add_r_int(PACK_NUM_REGISTER, 4)
+        ble_mock.add_r_int(PACK_NUM_REGISTER + 1, 7)
+        reader = self.make_reader(ble_mock)
+
+        first, second, elapsed, drained, discarded, repeats = await self.read_both(
+            reader, stray_seconds=1
+        )
+
+        self.assertEqual(first, {PACK_NUM_REGISTER: b"\x00\x04"})
+        self.assertEqual(second, {PACK_NUM_REGISTER + 1: b"\x00\x07"})
+        self.assertEqual((drained, discarded), (1, 0))
+        self.assertEqual(repeats, 0)
+        self.assertGreaterEqual(elapsed, 1)
         await asyncio.gather(*ble_mock.tasks)
 
 

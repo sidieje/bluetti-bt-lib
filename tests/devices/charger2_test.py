@@ -132,6 +132,19 @@ class TestCharger2(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     self.device.build_write_command(field_name, True)
 
+    def test_reverse_charging_top_up_power(self):
+        # The app's Top-up -> Power setting: 100 W, then 150 W (26 Oct 2026).
+        name = FieldName.REVERSE_CHARGING_TOP_UP_POWER.value
+        for hex_value, watts in (("0064", 100), ("0096", 150)):
+            with self.subTest(register_value=hex_value):
+                parsed = self.device.parse(15631, bytes.fromhex(hex_value))
+                self.assertEqual(parsed[name], watts)
+
+    def test_top_up_power_is_read_only(self):
+        name = FieldName.REVERSE_CHARGING_TOP_UP_POWER.value
+        sensors = [field.name for field in self.device.get_sensor_fields()]
+        self.assertIn(name, sensors)
+        self.assertIsNone(self.device.build_write_command(name, 120))
     def test_starter_battery_values_are_signed(self):
         # Reverse charging read 0xFCE0 (15540) and 0xFF9C (15542): -8 A, -100 W.
         # From the alternator they are positive: 59.84 A, 778 W.

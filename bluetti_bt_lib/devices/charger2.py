@@ -101,6 +101,11 @@ class CHARGER2(BaseDeviceV2):
                     FieldName.CTRL_SILENT_CHARGING,
                     15600,
                 ),
+                # A setting, not a measurement: the power of the top-up mode
+                # in W (app: Top-up -> Power). Changing it in the app from
+                # 100 to 150 W changed 15631 from 0x0064 to 0x0096. Read only
+                # until a write has been tried on a device.
+                UIntField(FieldName.REVERSE_CHARGING_TOP_UP_POWER, 15631),
 
                 SwapStringField(FieldName.DEVICE_TYPE, 15500, 6),
                 SerialNumberField(FieldName.DEVICE_SN, 15506),

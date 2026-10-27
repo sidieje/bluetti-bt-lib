@@ -100,9 +100,14 @@ EL300, and 5-10 W / 15-30 W on the EL10.
 
 The Charger 2 carries a different set of switches, so it gets its own table:
 
-|Device Name|ctrl_system_on_off|ctrl_silent_charging|
-|-----------|------------------|---------------------|
-|Charger 2  |✅                |✅                   |
+|Device Name|ctrl_system_on_off|ctrl_silent_charging|ctrl_reverse_charging|ctrl_reverse_charging_mode|
+|-----------|------------------|---------------------|---------------------|--------------------------|
+|Charger 2  |✅                |✅                   |✅                   |✅                        |
+
+`ctrl_reverse_charging` (on/off) and `ctrl_reverse_charging_mode` (`TRICKLE`,
+`PULSE`, `TOP_UP`) share register 15626 and are written as a read-modify-write,
+so the other bits of that register are kept. A write is refused when the current
+value of 15626 is not one of the known layouts.
 
 ## Installation
 

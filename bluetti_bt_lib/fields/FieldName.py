@@ -51,6 +51,8 @@ class FieldName(Enum):
     CTRL_POWER_OFF = "ctrl_power_off"
     CTRL_SPLIT_PHASE = "ctrl_split_phase"
     CTRL_SPLIT_PHASE_MODE = "ctrl_split_phase_mode"
+    CTRL_REVERSE_CHARGING = "ctrl_reverse_charging"
+    CTRL_REVERSE_CHARGING_MODE = "ctrl_reverse_charging_mode"
     CTRL_SILENT_CHARGING = "ctrl_silent_charging"
     CTRL_SYSTEM_ON_OFF = "ctrl_system_on_off"
     CTRL_TIME_CONTROL_ON = "ctrl_time_control_on"
@@ -95,6 +97,7 @@ class FieldName(Enum):
     PV_S2_CURRENT = "pv_s2_current"
     PV_S2_POWER = "pv_s2_power"
     PV_S2_VOLTAGE = "pv_s2_voltage"
+    REVERSE_CHARGING_TOP_UP_POWER = "reverse_charging_top_up_power"
     SM_P1_CURRENT = "sm_p1_current"  # Smart meter
     SM_P1_POWER = "sm_p1_power"
     SM_P1_VOLTAGE = "sm_p1_voltage"

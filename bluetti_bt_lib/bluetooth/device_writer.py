@@ -321,8 +321,51 @@ class DeviceWriter:
             isinstance(self.bluetti_device, CHARGER2)
             and field in control_fields
         )
+        # Read-modify-write for a field that owns only some bits of its
+        # register (today: the Charger 2 reverse charging switch and mode, which
+        # share 15626). It is opt-in by method: any field on any device that
+        # defines compose(current, value) takes this path. compose() gets the
+        # current register word and returns the whole new word, or None to
+        # refuse when the current word is not a layout the field knows; then
+        # nothing is written. The path costs a read before every write and needs
+        # a DeviceReader on the same connection (bluetti-write and Home
+        # Assistant pass one). It is generic on purpose, so the next shared
+        # register needs no device check here, but do not give a field a
+        # method called compose() for any other reason: the writer would start
+        # treating it as part of a shared register. The 15600 controls keep
+        # their own path below.
+        is_masked = not is_shared_control and callable(
+            getattr(field_obj, "compose", None)
+        )
 
-        if is_shared_control:
+        if is_masked:
+            valid = (
+                field_obj.to_option(value) is not None
+                if isinstance(field_obj, EnumField)
+                else field_obj.allowed_write_type(value)
+            )
+            if not valid:
+                self.logger.error(
+                    "Write rejected (value not allowed): %s=%r", field, value
+                )
+                return (
+                    WriteVerificationResult(False, False)
+                    if verify
+                    else False
+                )
+            if self.reader is None:
+                self.logger.error(
+                    "%s requires a reader for register %d",
+                    field,
+                    field_obj.address,
+                )
+                return (
+                    WriteVerificationResult(False, False)
+                    if verify
+                    else False
+                )
+            command = None
+        elif is_shared_control:
             if not isinstance(value, bool):
                 self.logger.error("Charger 2 control value must be bool")
                 return (
@@ -428,6 +471,43 @@ class DeviceWriter:
                             )
 
                         command = WriteableRegister(15600, new_word)
+
+                    if is_masked:
+                        address = field_obj.address
+                        raw_data = await self.reader.read_locked(
+                            [ReadableRegisters(address, 1)],
+                            raw=True,
+                        )
+                        raw_word = raw_data.get(address) if raw_data else None
+
+                        if raw_word is None or len(raw_word) != 2:
+                            self.logger.warning(
+                                "Unable to read valid register %d", address
+                            )
+                            return (
+                                WriteVerificationResult(False, False)
+                                if verify
+                                else False
+                            )
+
+                        current_word = struct.unpack("!H", raw_word)[0]
+                        new_word = field_obj.compose(current_word, value)
+
+                        if new_word is None:
+                            self.logger.warning(
+                                "Unexpected value 0x%04X in register %d, "
+                                "not writing %s",
+                                current_word,
+                                address,
+                                field,
+                            )
+                            return (
+                                WriteVerificationResult(False, False)
+                                if verify
+                                else False
+                            )
+
+                        command = WriteableRegister(address, new_word)
 
                     command_bytes = bytes(command)
                     if self.config.use_encryption:

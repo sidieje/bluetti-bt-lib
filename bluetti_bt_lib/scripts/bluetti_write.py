@@ -31,7 +31,12 @@ async def async_write(
         "ctrl_system_on_off",
         "ctrl_silent_charging",
     }
-    needs_reader = isinstance(built, CHARGER2) and field in control_fields
+    field_obj = next((f for f in built.fields if f.name == field), None)
+    # Shared-register controls (15600, and 15626 via compose) are written as
+    # a read-modify-write and need a reader on the same connection.
+    needs_reader = isinstance(built, CHARGER2) and (
+        field in control_fields or callable(getattr(field_obj, "compose", None))
+    )
 
     if needs_reader:
         # The reader and writer must share one BLE connection and lock.

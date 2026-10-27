@@ -201,6 +201,55 @@ class TestCharger2Writer(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(result.values["ctrl_silent_charging"])
         self.assertEqual(len(self.writes), 1)
 
+    async def test_reverse_charging_switch_keeps_the_mode(self):
+        for initial, desired, expected in (
+            (0x046A, True, 0x0469),
+            (0x0469, False, 0x046A),
+            (0x0169, False, 0x016A),
+        ):
+            with self.subTest(initial=f"0x{initial:04X}", desired=desired):
+                self.client.add_r_int(15626, initial)
+                self.writes.clear()
+
+                result = await self.writer.write("ctrl_reverse_charging", desired)
+
+                self.assertTrue(result)
+                self.assertEqual(len(self.writes), 1)
+                command = struct.unpack("!HHHH", self.writes[0][:8])
+                self.assertEqual(command[1], 15626)
+                self.assertEqual(command[2], expected)
+
+    async def test_reverse_charging_mode_keeps_the_switch(self):
+        self.client.add_r_int(15626, 0x0169)
+
+        result = await self.writer.write_verified(
+            "ctrl_reverse_charging_mode", "TOP_UP"
+        )
+
+        self.assertTrue(result.verified)
+        self.assertEqual(len(self.writes), 1)
+        command = struct.unpack("!HHHH", self.writes[0][:8])
+        self.assertEqual(command[1], 15626)
+        self.assertEqual(command[2], 0x0469)
+        self.assertTrue(result.values["ctrl_reverse_charging"])
+
+    async def test_reverse_charging_rejects_bad_values_without_writing(self):
+        self.client.add_r_int(15626, 0x046A)
+
+        self.assertFalse(await self.writer.write("ctrl_reverse_charging", 1))
+        self.assertFalse(
+            await self.writer.write("ctrl_reverse_charging_mode", "TURBO")
+        )
+        self.assertEqual(self.writes, [])
+
+    async def test_reverse_charging_unknown_register_is_not_written(self):
+        self.client.add_r_int(15626, 0x0468)
+
+        result = await self.writer.write("ctrl_reverse_charging", True)
+
+        self.assertFalse(result)
+        self.assertEqual(self.writes, [])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -59,6 +59,7 @@ FIELD_UNIT: Dict[FieldName, str] = {
     FieldName.PV_S2_CURRENT: "A",
     FieldName.PV_S2_POWER: "W",
     FieldName.PV_S2_VOLTAGE: "V",
+    FieldName.REVERSE_CHARGING_TOP_UP_POWER: "W",
     FieldName.SM_P1_CURRENT: "A",
     FieldName.SM_P1_POWER: "W",
     FieldName.SM_P1_VOLTAGE: "V",

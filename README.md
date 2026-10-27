@@ -267,9 +267,16 @@ to `STRAY_ANSWER_SECONDS` for that second answer and throws it away before it
 asks anything else; otherwise the next read of the same size would take it for
 its own. A cycle the retry saved is not logged as a warning at all, and the
 probe prints how many requests had to be asked twice, how many of those answered
-the second time, how often the reader waited for a second answer (`drained`) and
+the second time, how often the reader waited for a second answer (`drained`),
 how often one that differed from the first arrived and was thrown away
-(`discarded`).
+(`discarded`), and how many frames were ignored as repeats (`repeats`).
+
+An answer identical to the one before it is counted under `repeats` rather than
+`discarded`, because the reader drops it before the wait sees it. The wait still
+runs its full length in that case, and that costs about three seconds once per
+affected cycle. It is not shortened: on a station that repeats frames a repeat
+can land later than any shorter wait would allow, and the next read would then
+take that repeat for its own answer.
 
 A frame that arrives with junk in front of it is a different fault. The older
 towers are seen to slip a byte into the notify stream, which shifts a complete

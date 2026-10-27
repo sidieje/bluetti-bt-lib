@@ -33,13 +33,23 @@ RESPONSE_TIMEOUT_SECONDS = 5
 
 # A read that goes unanswered is asked again before the cycle is given up. Only
 # a read is repeated: the answer to the first attempt, however late it lands,
-# is an answer to the same request, so it cannot end up filed under a different
-# register. A write carries no such guarantee and is never resent.
+# is an answer to the same request, so it settles that read correctly. The
+# answer to the other attempt can still arrive after the read is done, which is
+# what STRAY_ANSWER_SECONDS is for. A write is never resent.
 READ_ATTEMPTS = 2
 
 # A station that skipped a request usually skipped it because it was busy, so a
 # retry fired off immediately can land in the same busy moment.
 RETRY_PAUSE_SECONDS = 0.2
+
+# A read that was asked twice can be answered twice: the first answer settles
+# the request, the second one is still on its way. Sent on at once, the next
+# request of the same size would take that second answer for its own (a
+# Charger 2 filed the answer to 15584 under 15600, and that of 15600 under
+# 15626). So after a retried read the reader waits this long for the stray
+# answer, discarding it, before it asks anything else. The wait ends early when
+# a differing answer is caught; 3 s is not tuned to measured station timings.
+STRAY_ANSWER_SECONDS = 3
 
 # How long a fresh connection gets to finish its key exchange. The device
 # starts the exchange on its own once notifications are on, so it normally
@@ -122,6 +132,13 @@ class LinkStats:
     """Reads in this cycle that only answered on the second attempt."""
     shifted: int = 0
     """Answers rescued by dropping stray bytes from in front of the frame."""
+    drained: int = 0
+    """Waits for a stray second answer after a retried read (see
+    _drain_stray_answer), whether or not one arrived."""
+    discarded: int = 0
+    """Stray second answers the drain actually caught and threw away. A second
+    answer identical to the first is dropped earlier by the duplicate filter in
+    _notification_handler and is not counted here."""
     abort_streak: int = 0
     """Cycles in a row that had an abort, not counting the one in progress."""
 
@@ -413,6 +430,10 @@ class DeviceReader:
         device only restarts a handshake when the connection itself drops, so
         resetting the session over a live link would wedge the device. The
         connection is not ours to drop either when a client was supplied.
+
+        A retried read that does get an answer never comes here, although the
+        second answer to it may still be on its way; _drain_stray_answer()
+        catches that one instead. See its docstring for how the two relate.
         """
         self.logger.debug("Resyncing the notification pipeline")
 
@@ -913,6 +934,8 @@ class DeviceReader:
         stats.retried = 0
         stats.recovered = 0
         stats.shifted = 0
+        stats.drained = 0
+        stats.discarded = 0
         self._retry_pending = False
 
     def _record_answer(self, registers: DeviceRegister, elapsed: float) -> None:
@@ -1003,8 +1026,9 @@ class DeviceReader:
         and then, then answers the next cycle as though nothing had happened, so
         the only thing the first attempt cost was a whole cycle of data. Only a
         read is asked twice. A late answer to the first attempt is still an
-        answer to the same request, so the retry cannot file a value under the
-        wrong register the way resending anything else would.
+        answer to the same request, so it settles the read correctly; the
+        answer to the other attempt may still be on its way when the read
+        returns, and _drain_stray_answer() keeps it away from the next request.
 
         Raises ResponseTimeout when no valid answer arrives in time; the caller
         must then stop using this connection. A MODBUS exception answer (for
@@ -1017,7 +1041,9 @@ class DeviceReader:
         while True:
             attempt += 1
             try:
-                return await self._send_once(registers, attempt, attempt == attempts)
+                response = await self._send_once(
+                    registers, attempt, attempt == attempts
+                )
             except ResponseTimeout:
                 if attempt == attempts:
                     raise
@@ -1025,6 +1051,63 @@ class DeviceReader:
                 self.link_stats.retried += 1
                 self._retry_pending = True
                 await asyncio.sleep(RETRY_PAUSE_SECONDS)
+                continue
+
+            if attempt > 1:
+                await self._drain_stray_answer(registers)
+            return response
+
+    async def _drain_stray_answer(self, registers: DeviceRegister) -> None:
+        """Let the second answer to a retried read land while nothing is pending.
+
+        With no request in flight the notification handler only collects what
+        arrives, so the stray answer cannot settle a later request. Stops as
+        soon as an answer of this size is in, or after STRAY_ANSWER_SECONDS when
+        the station never sends one.
+
+        A second answer that is byte for byte the first one (the register did
+        not change between the two asks) never reaches the buffer: the
+        duplicate filter in _notification_handler drops it, because
+        last_notification still holds the first answer. In that case the wait
+        is what keeps it away from the next request, which would accept it
+        since _send_once() clears last_notification. Only an answer that
+        differs is collected here, and that ends the wait early.
+
+        How this relates to _resync_link(): both deal with an answer that is
+        still on its way to a request nobody is waiting for. _resync_link()
+        runs when a read is given up on (read() and read_locked()); it drops
+        the receive state and the notification subscription so the next
+        connect() starts clean, without waiting for anything. This drain
+        covers the case the retry opened, where the read did succeed: the
+        link stays as it is and the stray answer is waited for and thrown
+        away. Whether stop_notify/start_notify alone would stop a delayed
+        answer from arriving afterwards is not established, so the drain does
+        not rely on it. Keep the two in step when either one changes.
+        """
+        self.link_stats.drained += 1
+        self.notify_response = bytearray()
+        size = registers.response_size()
+        started = time.monotonic()
+        deadline = started + STRAY_ANSWER_SECONDS
+
+        while len(self.notify_response) < size and time.monotonic() < deadline:
+            await asyncio.sleep(0.05)
+
+        if self.notify_response:
+            self.link_stats.discarded += 1
+            self.logger.debug(
+                "Discarded a second answer to %s after %.2fs: %s",
+                registers,
+                time.monotonic() - started,
+                bytes(self.notify_response[:RX_SAMPLE_BYTES]).hex(),
+            )
+        else:
+            self.logger.debug(
+                "No differing second answer to %s within %ss",
+                registers,
+                STRAY_ANSWER_SECONDS,
+            )
+        self.notify_response = bytearray()
 
     async def _send_once(
         self, registers: DeviceRegister, attempt: int, last_attempt: bool

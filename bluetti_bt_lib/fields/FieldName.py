@@ -95,6 +95,7 @@ class FieldName(Enum):
     PV_S2_CURRENT = "pv_s2_current"
     PV_S2_POWER = "pv_s2_power"
     PV_S2_VOLTAGE = "pv_s2_voltage"
+    REVERSE_CHARGING_TOP_UP_POWER = "reverse_charging_top_up_power"
     SM_P1_CURRENT = "sm_p1_current"  # Smart meter
     SM_P1_POWER = "sm_p1_power"
     SM_P1_VOLTAGE = "sm_p1_voltage"

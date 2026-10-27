@@ -1,7 +1,10 @@
+import logging
 from typing import Any, List
 
 from ..registers import ReadableRegisters, WriteableRegister
 from ..fields import DeviceField, BoolField, BoolFieldNonZero, SwitchField, SelectField, NumberField, FieldName
+
+_LOGGER = logging.getLogger(__name__)
 
 # Asking for one field at a time costs a radio round trip each, and a station
 # with 28 of them spends most of a poll cycle waiting for answers. Fields that
@@ -75,6 +78,10 @@ class BluettiDevice:
         self.fields = fields
         self.pack_fields = pack_fields
         self.max_packs = max_packs
+
+        # Per field that parse() had to leave out: the reason last reported,
+        # and how many reads of that same value were skipped quietly since.
+        self._skipped_fields: dict[str, tuple[str, int]] = {}
 
         self.fields.sort(key=lambda f: f.address)
         self.pack_fields.sort(key=lambda f: f.address)
@@ -180,15 +187,64 @@ class BluettiDevice:
         for f in fields:
             data_start = 2 * (f.address - starting_address)
             field_data = data[data_start : data_start + 2 * f.size]
-            value = f.parse(field_data)
+            if pack_num is not None and f in self.pack_fields:
+                key = f"pack_{str(pack_num)}_{f.name}"
+            else:
+                key = f.name
+            try:
+                value = f.parse(field_data)
+            except ValueError as err:
+                # One field with a value it does not know (a Charger 2 that
+                # briefly reports an unknown control word right after a
+                # reconnect, for one) must not cost the whole cycle: leave
+                # that field out and keep the others.
+                #
+                # struct.error is deliberately not caught. A truncated answer
+                # never gets here: the reader only accepts a frame whose
+                # length, byte count and CRC match the request, and the filter
+                # above only hands a field to parse() when all of its
+                # registers are inside the data, so field_data is always
+                # 2 * f.size bytes long. A struct.error would mean a field
+                # whose parse() disagrees with its own size, which is a bug in
+                # that field and should fail loudly rather than be skipped.
+                self._report_skipped_field(key, err)
+                continue
+            self._clear_skipped_field(key)
             if not f.in_range(value):
                 continue
-            if pack_num is not None and f in self.pack_fields:
-                parsed[f"pack_{str(pack_num)}_{f.name}"] = value
-            else:
-                parsed[f.name] = value
+            parsed[key] = value
 
         return parsed
+
+    def _report_skipped_field(self, key: str, err: ValueError) -> None:
+        """Log a field that was left out, once per field and value.
+
+        A station can sit in such a state for a while (a Charger 2 reads
+        0x001E at 15600 for about a minute after a hard disconnect), and a
+        warning on every poll says nothing new after the first one. The first
+        skip of a value warns; the same value again is DEBUG and counted; a
+        different value warns again and says how many were held back. Once the
+        field parses again it starts over, so a later recurrence warns again.
+        """
+        reason = str(err)
+        last, held = self._skipped_fields.get(key, ("", 0))
+
+        if reason == last:
+            self._skipped_fields[key] = (reason, held + 1)
+            _LOGGER.debug("Skipping %s again: %s", key, reason)
+            return
+
+        self._skipped_fields[key] = (reason, 0)
+        extra = f" [{held} more skipped reads of the previous value]" if held else ""
+        _LOGGER.warning("Skipping %s: %s%s", key, reason, extra)
+
+    def _clear_skipped_field(self, key: str) -> None:
+        """Note that a field that was being skipped parses again."""
+        last = self._skipped_fields.pop(key, None)
+        if last is not None:
+            _LOGGER.debug(
+                "%s parses again after %d skipped read(s)", key, last[1] + 1
+            )
 
     def build_write_command(self, name: str, value: Any) -> WriteableRegister | None:
         """Build a command to write values to the device"""

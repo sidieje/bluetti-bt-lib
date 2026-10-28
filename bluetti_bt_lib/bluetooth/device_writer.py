@@ -112,6 +112,8 @@ class DeviceWriter:
         self._attached = False
         """True when the client belongs to a DeviceReader's shared connection."""
         self._write_future: asyncio.Future[bytes] | None = None
+        self._write_command: WriteableRegister | None = None
+        """The write _write_future waits for; only its echo or exception settles it."""
 
         self.logger = logging.getLogger(
             f"{__name__}.{mac_loggable(bleak_client.address).replace(':', '_')}"
@@ -173,6 +175,19 @@ class DeviceWriter:
         to avoid race conditions. The write() method handles this automatically.
         """
         if self._connected and self.client.is_connected:
+            return True
+
+        if self._attached and self.config.use_encryption:
+            # The link and its session belong to the reader, which reconnects
+            # it and redoes the key exchange. Reconnecting here would bring the
+            # link up with no subscription and the old session: the write
+            # would go out encrypted with dead keys and look successful.
+            if not self.client.is_connected:
+                self.logger.warning(
+                    "Shared connection is down; the reader reconnects it on its next poll"
+                )
+                return False
+            self._connected = True
             return True
 
         try:
@@ -262,6 +277,9 @@ class DeviceWriter:
                 except BleakError:
                     pass
                 self.has_notifier = False
+            # Without this the next connect() skips the subscription and the
+            # key exchange, and every later write fails on the reset session.
+            self._owns_notifier = False
 
             # Only disconnect clients that this writer established.
             # When attached, the client belongs to the reader: pulling
@@ -440,6 +458,7 @@ class DeviceWriter:
                     self.logger.debug("Writing command: %s", command)
 
                     if self._owns_notifier:
+                        self._write_command = command
                         self._write_future = (
                             asyncio.get_running_loop().create_future()
                         )
@@ -455,6 +474,12 @@ class DeviceWriter:
                             self.logger.debug(
                                 "Write response received: %s", response.hex()
                             )
+                            if not command.is_valid_response(response):
+                                # A MODBUS exception: the station refused it.
+                                self.logger.warning(
+                                    "Write of %s refused: %s", command, response.hex()
+                                )
+                                write_succeeded = False
                         except asyncio.TimeoutError:
                             self.logger.warning("Write response timeout")
                             write_succeeded = False
@@ -618,6 +643,7 @@ class DeviceWriter:
                 )
             finally:
                 self._write_future = None
+                self._write_command = None
 
     def _calculate_expected_encrypted_length(
         self, buffer: bytearray
@@ -668,8 +694,18 @@ class DeviceWriter:
 
         if not decrypted.is_pre_key_exchange:
             # This is a regular response (e.g., write acknowledgment)
-            if self._write_future and not self._write_future.done():
-                self._write_future.set_result(decrypted.buffer)
+            pending = self._write_command
+            answer = bytes(decrypted.buffer)
+            if (
+                self._write_future
+                and not self._write_future.done()
+                and pending is not None
+                and (pending.is_valid_response(answer) or pending.is_valid_exception(answer))
+            ):
+                self._write_future.set_result(answer)
+            else:
+                # A late answer or other stray frame must not pass for the ack.
+                self.logger.debug("Ignoring frame that does not answer the write: %s", answer.hex())
             return
 
         decrypted.verify_checksum()

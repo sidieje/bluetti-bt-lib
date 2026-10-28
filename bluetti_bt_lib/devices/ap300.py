@@ -15,6 +15,13 @@ from ..base_devices import BaseDeviceV2
 
 
 class AP300(BaseDeviceV2):
+    # Under bench test, not yet confirmed. This family keeps its polling
+    # fields in 2005-2067 rather than the 3001-3061 range the AC300 evidence
+    # covers, so it needs its own probe run. The eight default blocks become
+    # seven, because 2005+1 and 2011+10 merge into one 16-register read.
+    max_poll_block = 16
+    max_poll_gap = 8
+
     def __init__(self):
         super().__init__(
             [

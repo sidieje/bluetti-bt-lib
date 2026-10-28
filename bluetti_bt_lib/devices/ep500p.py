@@ -12,6 +12,11 @@ from ..enums import OutputMode, DisplayMode, UpsMode, SplitPhaseMode
 
 
 class EP500P(BaseDeviceV1):
+    # Same merge limits as the EP500 and for the same reason; see the note on
+    # AC300. Seven blocks become five: 36+8, 70+11, 86+3, 3001+16 and 3061+1.
+    max_poll_block = 16
+    max_poll_gap = 8
+
     def __init__(self):
         super().__init__(
             [

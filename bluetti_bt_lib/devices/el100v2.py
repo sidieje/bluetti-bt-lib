@@ -15,6 +15,14 @@ from ..base_devices import BaseDeviceV2
 
 
 class EL100V2(BaseDeviceV2):
+    # Under bench test alongside the AP300. This one saves no request: seven
+    # blocks either way, because 2005+10 and 2015+9 only merge as far as a
+    # 16-register block is allowed to. It is here to check that the station
+    # answers a 16-register read at all, which is what the wider limits ask
+    # for, and it should come back out again if it does not pay for itself.
+    max_poll_block = 16
+    max_poll_gap = 8
+
     def __init__(self):
         super().__init__(
             [

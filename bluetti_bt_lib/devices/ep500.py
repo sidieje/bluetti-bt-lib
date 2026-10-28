@@ -12,6 +12,13 @@ from ..enums import OutputMode, DisplayMode, UpsMode, SplitPhaseMode
 
 
 class EP500(BaseDeviceV1):
+    # Same merge limits as the AC300, see the note there. This profile has no
+    # register at 80, so 86+3 stays short, but the rest merges the same way:
+    # 36+8, 70+11, 86+3, 3001+16 and the orphan 3061, seven blocks down to
+    # five. Bench evidence is from an AC300 rather than this station.
+    max_poll_block = 16
+    max_poll_gap = 8
+
     def __init__(self):
         super().__init__(
             [

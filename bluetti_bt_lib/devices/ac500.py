@@ -14,6 +14,14 @@ from ..enums import OutputMode, DisplayMode, UpsMode, SplitPhaseMode
 
 
 class AC500(BaseDeviceV1):
+    # The polling fields are the same shape as the AC300's, so the eight
+    # default blocks merge to the same four wide ones (36+8, 70+11, 86+11 and
+    # 3001+16) plus the orphan 3061 that the AC300 does not have. See the note
+    # on AC300 for why; the bench run was on an AC300, so a probe against a
+    # real AC500 is still worth having.
+    max_poll_block = 16
+    max_poll_gap = 8
+
     def __init__(self):
         super().__init__(
             [

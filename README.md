@@ -258,6 +258,9 @@ tells the causes apart:
 alone but fails in the middle of a cycle is a timing problem, a block that fails
 both ways is that register. `--packs-every N` walks the pack slots every Nth
 round, which is how a device with battery packs is tested with and without them.
+A round that is not walking does not ask for register 96 either: the number of
+packs installed only feeds the walk, so it is asked for once per connection and
+polled afresh on the rounds that walk.
 
 A read that goes unanswered is asked for once more before the cycle is given up
 on. Writes are never sent twice. A station that was only slow then answers both

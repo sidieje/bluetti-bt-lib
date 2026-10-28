@@ -80,9 +80,14 @@ DEVICES = {
 # "E200V2" and hands that to build_device.
 DEVICE_ALIASES = {
     "E200V2": "Elite 200 V2",
+    # DEVICE_NAME_RE accepts the spaced spelling a type register can report.
+    "CHARGER 2": "CHARGER2",
+    # "Handsfree 1" / "Handsfree 2" after the same normalisation as E200V2.
+    "H1": "Handsfree 1",
+    "H2": "Handsfree 2",
 }
 
 # Prefixes of all currently supported devices
 DEVICE_NAME_RE = re.compile(
-    r"^(AC2A|AC2P|AC50B|AC60|AC60P|AC70|AC70P|AC180|AC180T|AC180P|AC200L|AC200M|AC200PL|AC300|AC500|AP300|CHARGER\s?2|EB3A|EL10|EL100mini|EL100V2|Elite\s200\sV2|E200V2|EL300|EL30V2|EP500|EP500P|EP600|EP760|EP800|EP2000|Handsfree\s[12]|PR30V2|PR100V2)(\d+)$"
+    r"^(AC2A|AC2P|AC50B|AC60|AC60P|AC70|AC70P|AC180|AC180T|AC180P|AC200L|AC200M|AC200PL|AC300|AC500|AP300|CHARGER\s?2|EB3A|EL10|EL100mini|EL100V2|Elite\s200\sV2|E200V2|EL300|EL30V2|EP500|EP500P|EP600|EP760|EP800|EP2000|Handsfree\s[12]|H[12]|PR30V2|PR100V2)(\d+)$"
 )

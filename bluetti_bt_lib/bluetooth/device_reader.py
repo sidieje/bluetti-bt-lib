@@ -12,11 +12,16 @@ from bleak_retry_connector import BleakClientWithServiceCache, establish_connect
 from cryptography.exceptions import InvalidSignature
 
 from .encryption import BluettiEncryption, Message, MessageType, AES_BLOCK_SIZE
-from ..base_devices import BluettiDevice, STARTUP_FIELDS
+from ..base_devices import BluettiDevice, STARTUP_FIELDS, PACK_COUNT_FIELDS
 from ..const import NOTIFY_UUID, WRITE_UUID
 from ..fields import FieldName
 from ..registers import ReadableRegisters, DeviceRegister
 from ..utils.privacy import mac_loggable
+
+# The fields the reader asks for once per connection and reports from cache
+# afterwards. The pack count only joins this set on the cycles that are not
+# walking the pack slots; see bluetti_device.PACK_COUNT_FIELDS.
+_CACHED_FIELDS = STARTUP_FIELDS | PACK_COUNT_FIELDS
 
 # A station needs a moment after the pack selector is written before its pack
 # registers hold the data of the newly selected pack.
@@ -194,9 +199,11 @@ class DeviceReader:
         self.handshake_failed = False
         """Set when the key exchange cannot complete; only a reconnect fixes it."""
         self._startup_values: dict[str, Any] = {}
-        """Answers for the infrequent fields (bluetti_device.STARTUP_FIELDS).
-        They are asked for once per connection and reported from here for the
-        rest of it, so a consumer still sees the same keys every cycle."""
+        """Answers for the fields that are not asked for every cycle: the
+        infrequent ones (bluetti_device.STARTUP_FIELDS) and, on a cycle that is
+        not walking the pack slots, the pack count. They are asked for once per
+        connection and reported from here for the rest of it, so a consumer
+        still sees the same keys every cycle."""
         self._connected = False
         self._answered = False
         """Whether this connection has answered a request yet. A station that
@@ -603,6 +610,9 @@ class DeviceReader:
             # pack_slots key is reported, so the consumer can tell that this
             # cycle said nothing about the slots rather than finding them empty.
             pack_registers = []
+            # Register 96 only feeds that walk, so a cycle that is not walking
+            # drops it from the cycle and asks for it once below instead.
+            registers = self.bluetti_device.get_packless_polling_registers()
 
         if only_registers is None:
             # The infrequent fields are only asked for until this connection
@@ -613,6 +623,17 @@ class DeviceReader:
                 for f in self.bluetti_device.startup_fields
                 if f.name not in self._startup_values
             ]
+            if not include_packs:
+                # The pack count left the cycle above, so it is asked for the
+                # same way: once, and remembered for the rest of the
+                # connection. A cycle that does walk the slots polls it afresh,
+                # so a pack swapped while the station stayed connected is still
+                # noticed there.
+                pending += [
+                    f
+                    for f in self.bluetti_device.pack_count_fields
+                    if f.name not in self._startup_values
+                ]
             if pending:
                 registers = registers + self.bluetti_device.coalesce_fields(pending)
 
@@ -669,7 +690,7 @@ class DeviceReader:
                         # they arrive: a cycle that fails further down should
                         # not lose them and ask for all of them again.
                         for name, value in parsed.items():
-                            if name in STARTUP_FIELDS:
+                            if name in _CACHED_FIELDS:
                                 self._startup_values[name] = value
 
                     # Register 96 counts the packs that are installed, but it

@@ -258,6 +258,20 @@ tells the causes apart:
 alone but fails in the middle of a cycle is a timing problem, a block that fails
 both ways is that register. `--packs-every N` walks the pack slots every Nth
 round, which is how a device with battery packs is tested with and without them.
+A round that is not walking does not ask for register 96 either: the number of
+packs installed only feeds the walk, so it is asked for once per connection and
+polled afresh on the rounds that walk.
+
+Some profiles merge their polling registers into blocks wider than the default
+ten registers, because every round trip is a chance to slip a byte and a chance
+to time out. The AC300, AC500, EP500 and EP500P merge to sixteen; on an AC300
+that took a round from seven requests and 1.40s to four requests and 0.80s, at
+the same retry rate. The AP300 and EL100V2 merge the same way: on an AP300
+eight requests and 1.28s became seven requests and 1.10s, while the EL100V2
+stayed at seven requests and 1.01s because its fields were already nearly
+merged. `--blocks` is how a station that has not been measured yet is checked
+before it joins that list: a station that refuses an unmapped register answers
+the whole block with an exception, which would cost every field in it.
 
 A read that goes unanswered is asked for once more before the cycle is given up
 on. Writes are never sent twice. A station that was only slow then answers both

@@ -222,6 +222,72 @@ class TestBluettiDevice(unittest.TestCase):
         self.assertEqual(blocks[0].quantity, 12)
         self.assertEqual(blocks[1].starting_address, 113)
 
+    def test_per_device_limits_widen_the_merge(self):
+        # A profile whose station answers longer reads can ask for more
+        # registers per request, which trades a round trip for a longer answer.
+        fields = [
+            UIntField(FieldName.AC_OUTPUT_POWER, 38),
+            UIntField(FieldName.AC_OUTPUT_MODE, 70),
+            UIntField(FieldName.INTERNAL_AC_VOLTAGE, 71),
+            UIntField(FieldName.INTERNAL_AC_FREQUENCY, 74),
+            UIntField(FieldName.AC_INPUT_VOLTAGE, 77),
+            UIntField(FieldName.AC_INPUT_FREQUENCY, 80),
+        ]
+
+        narrow = BluettiDevice(fields=fields)
+        self.assertEqual(
+            [(b.starting_address, b.quantity) for b in narrow.get_polling_registers()],
+            [(38, 1), (70, 8), (80, 1)],
+        )
+
+        class WideDevice(BluettiDevice):
+            max_poll_block = 16
+            max_poll_gap = 8
+
+        wide = WideDevice(fields=fields)
+        self.assertEqual(
+            [(b.starting_address, b.quantity) for b in wide.get_polling_registers()],
+            [(38, 1), (70, 11)],
+        )
+
+    def test_pack_count_leaves_the_cycle_only_when_slots_can_be_walked(self):
+        # The installed pack count only changes when someone swaps a pack, and
+        # a cycle that is not walking the slots has no other use for it, so it
+        # stops paying for a request of its own every cycle. A profile that
+        # declares pack fields but no slots cannot walk them at all, so there
+        # the count stays in the cycle.
+        fields = [
+            UIntField(FieldName.BATTERY_SOC, 43),
+            UIntField(FieldName.PACK_NUM, 96),
+        ]
+        pack_fields = [DecimalField(FieldName.PACK_VOLTAGE, 98, 2)]
+
+        walkable = BluettiDevice(fields=fields, pack_fields=pack_fields, max_packs=4)
+        self.assertEqual(
+            [(b.starting_address, b.quantity) for b in walkable.get_polling_registers()],
+            [(43, 1), (96, 1)],
+        )
+        self.assertEqual(
+            [
+                (b.starting_address, b.quantity)
+                for b in walkable.get_packless_polling_registers()
+            ],
+            [(43, 1)],
+        )
+        self.assertEqual(
+            [f.name for f in walkable.pack_count_fields], [FieldName.PACK_NUM.value]
+        )
+
+        no_slots = BluettiDevice(fields=fields, pack_fields=pack_fields, max_packs=0)
+        self.assertEqual(
+            [
+                (b.starting_address, b.quantity)
+                for b in no_slots.get_packless_polling_registers()
+            ],
+            [(43, 1), (96, 1)],
+        )
+        self.assertEqual(no_slots.pack_count_fields, [])
+
     def test_infrequent_fields_split_out_of_the_cycle(self):
         # Identity, firmware and the Wi-Fi name only change when someone
         # intervenes, so they leave the cycle and answer once per connection.

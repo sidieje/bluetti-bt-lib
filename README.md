@@ -266,10 +266,12 @@ Some profiles merge their polling registers into blocks wider than the default
 ten registers, because every round trip is a chance to slip a byte and a chance
 to time out. The AC300, AC500, EP500 and EP500P merge to sixteen; on an AC300
 that took a round from seven requests and 1.40s to four requests and 0.80s, at
-the same retry rate. `--blocks` is how a station that has not been measured yet
-is checked before it joins that list: a station that refuses an unmapped
-register answers the whole block with an exception, which would cost every
-field in it.
+the same retry rate. The AP300 and EL100V2 merge the same way: on an AP300
+eight requests and 1.28s became seven requests and 1.10s, while the EL100V2
+stayed at seven requests and 1.01s because its fields were already nearly
+merged. `--blocks` is how a station that has not been measured yet is checked
+before it joins that list: a station that refuses an unmapped register answers
+the whole block with an exception, which would cost every field in it.
 
 A read that goes unanswered is asked for once more before the cycle is given up
 on. Writes are never sent twice. A station that was only slow then answers both

@@ -344,6 +344,14 @@ class DeviceReader:
         stack a second connection on top of a half-dead one.
         """
         self._connected = False
+        # The link may still be up (a BleakError on a live link, a supplied
+        # client): unsubscribe, or the next connect() subscribes a second time,
+        # which some backends (bleak-esphome) refuse for good.
+        if self.has_notifier and self.client and self.client.is_connected:
+            try:
+                await self.client.stop_notify(NOTIFY_UUID)
+            except Exception:
+                pass
         self.has_notifier = False
         self._notified_client = None
         self.encryption.reset()
@@ -835,12 +843,13 @@ class DeviceReader:
                 await self._mark_disconnected()
                 return None
             except asyncio.CancelledError:
-                # External cancellation (e.g. HA reload/unload); the
-                # connection state is now uncertain, so drop it and let
-                # the cancellation propagate. The timeout above is
-                # converted to TimeoutError by async_timeout before it
-                # can reach this handler.
-                await self._mark_disconnected()
+                # External cancellation (e.g. HA reload/unload, or a caller's
+                # wait_for). A request may be half answered, so resync: that
+                # unsubscribes, which discards the late answer, and keeps a
+                # live link and its session usable. If the link is gone the
+                # next connect() finds out. The timeout above is converted to
+                # TimeoutError by async_timeout before it can reach this handler.
+                await self._resync_link()
                 raise
             except BaseException as err:
                 self.logger.warning("Unknown error %s", err)
@@ -915,7 +924,8 @@ class DeviceReader:
             await self._mark_disconnected()
             return None
         except asyncio.CancelledError:
-            await self._mark_disconnected()
+            # Same as read(): resync rather than forget a link that may be up.
+            await self._resync_link()
             raise
         except BaseException as err:
             self.logger.warning("Error reading selected registers: %s", err)

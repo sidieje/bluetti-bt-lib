@@ -56,6 +56,11 @@ STRAY_ANSWER_SECONDS = 3
 # takes a second or two.
 HANDSHAKE_TIMEOUT_SECONDS = 20
 
+# A link kept by _resync_link() is resumed by the next connect(). After this
+# many resyncs in a row without a single answer it is dropped instead, so a
+# link the stack still reports as connected cannot hold the reader forever.
+MAX_RESYNCS_ON_ONE_LINK = 3
+
 # An answer this late is worth remembering when a later request fails: a station
 # that is about to stop answering usually starts by answering slowly.
 SLOW_REQUEST_SECONDS = 1.5
@@ -179,6 +184,8 @@ class DeviceReader:
         They are asked for once per connection and reported from here for the
         rest of it, so a consumer still sees the same keys every cycle."""
         self._connected = False
+        self._resyncs = 0
+        """Resyncs since the kept link last answered (see MAX_RESYNCS_ON_ONE_LINK)."""
         self._answered = False
         """Whether this connection has answered a request yet. A station that
         is still waking tends to miss the first one, so that miss is logged
@@ -211,7 +218,25 @@ class DeviceReader:
         try:
             if self.ble_client:
                 self.device = None
+                self.client = self.ble_client
+            elif (
+                self.client is not None
+                and self.client.is_connected
+                and self._resyncs < MAX_RESYNCS_ON_ONE_LINK
+            ):
+                # _resync_link() kept this link, and its encryption session,
+                # up on purpose. Resume it: a station that does not advertise
+                # while connected is not found by a new scan, and a second
+                # establish_connection() would stack a link on the live one.
+                self.logger.debug("Resuming the kept connection")
             else:
+                if self.client is not None and self.client.is_connected:
+                    self.logger.debug(
+                        "Kept connection stayed silent through %d resyncs, dropping it",
+                        self._resyncs,
+                    )
+                    await self._mark_disconnected()
+
                 self.device = await BleakScanner.find_device_by_address(
                     self.mac, timeout=5
                 )
@@ -220,17 +245,21 @@ class DeviceReader:
                     self.logger.error("Device not found")
                     return False
 
-            self.logger.debug("Connecting to device")
+                self.logger.debug("Connecting to device")
 
-            if self.ble_client:
-                self.client = self.ble_client
-            else:
                 self.client = await establish_connection(
                     BleakClientWithServiceCache,
                     self.device,
                     self.device.name or "Unknown Device",
                     max_attempts=10,
                 )
+                # A new link means a new key exchange: a session, buffer or
+                # duplicate filter left by the previous link must not make the
+                # handshake look finished or garble the peer's first frames.
+                self.encryption.reset()
+                self.encrypted_buffer.clear()
+                self.last_notification = None
+                self._resyncs = 0
 
             # _notified_client tracks the client whose subscription is
             # confirmed live. has_notifier records that a subscription
@@ -419,6 +448,8 @@ class DeviceReader:
         catches that one instead. See its docstring for how the two relate.
         """
         self.logger.debug("Resyncing the notification pipeline")
+
+        self._resyncs += 1
 
         self.current_registers = None
         self.notify_response = bytearray()
@@ -1106,6 +1137,7 @@ class DeviceReader:
             self.logger.debug("Got response (%d bytes)", len(res))
 
             self._answered = True
+            self._resyncs = 0
             self._record_answer(registers, time.monotonic() - sent_at)
 
             return cast(bytes, res)

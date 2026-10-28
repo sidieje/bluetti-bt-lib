@@ -34,16 +34,48 @@ class TestAC300(unittest.TestCase):
         # One request per field put the AC300 at 28 reads plus two per pack
         # slot, which is most of a poll cycle on the radio. Neighbouring
         # main registers are read together instead; the pack reads stay as
-        # they were.
+        # they were. This profile merges harder than the default limits, which
+        # takes the cycle from the seven requests the defaults produce down
+        # to four.
         blocks = self.device.get_polling_registers()
-        self.assertEqual(len(blocks), 7)
+        self.assertEqual(
+            [(b.starting_address, b.quantity) for b in blocks],
+            [(36, 8), (70, 11), (86, 11), (3001, 16)],
+        )
+
+        # A block covers a range, so the merge has to leave no field outside
+        # one, or a wider block would silently drop it from the cycle.
+        covered = set()
+        for block in blocks:
+            covered.update(
+                range(block.starting_address, block.starting_address + block.quantity)
+            )
+        for field in self.device.polling_fields:
+            self.assertTrue(
+                all(
+                    address in covered
+                    for address in range(field.address, field.address + field.size)
+                ),
+                f"{field.name} is not covered by a polling request",
+            )
 
         # The identity and firmware registers are not part of the cycle; they
-        # are read once per connection (see STARTUP_FIELDS).
+        # are read once per connection (see STARTUP_FIELDS), and they keep the
+        # request size that has always answered them.
         startup = self.device.get_startup_registers()
         self.assertEqual(len(startup), 2)
         self.assertEqual(startup[0].starting_address, 10)
         self.assertEqual(startup[1].starting_address, 17)
+
+        # A cycle that is not walking the pack slots does not ask for the pack
+        # count, which is the only thing holding 89-95 onto the 86 block.
+        self.assertEqual(
+            [
+                (b.starting_address, b.quantity)
+                for b in self.device.get_packless_polling_registers()
+            ],
+            [(36, 8), (70, 11), (86, 3), (3001, 16)],
+        )
 
         pack_blocks = self.device.get_pack_polling_registers()
         self.assertEqual(len(pack_blocks), 2)

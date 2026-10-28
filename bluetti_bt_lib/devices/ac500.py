@@ -32,7 +32,9 @@ class AC500(BaseDeviceV1):
                 DecimalField(FieldName.PV_S1_CURRENT, 88, 2, 10),
                 # How many packs are installed. The reader polls it before the
                 # pack walk and uses it to stop early, but it does not say
-                # which slots are occupied, so it cannot pick them out.
+                # which slots are occupied, so it cannot pick them out. A cycle
+                # that is not walking the slots leaves it out of the cycle
+                # altogether; see bluetti_device.PACK_COUNT_FIELDS.
                 UIntField(FieldName.PACK_NUM, 96),
                 SelectField(FieldName.CTRL_UPS_MODE, 3001, UpsMode),
                 BoolField(FieldName.CTRL_SPLIT_PHASE, 3004),

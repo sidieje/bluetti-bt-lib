@@ -329,6 +329,48 @@ class TestDeviceReader(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(self.ble_mock.reads)
         self.assertIn((36, 8), self.ble_mock.reads)
 
+    async def test_pack_count_is_asked_for_once_when_slots_are_not_walked(self):
+        # The installed pack count only changes when someone swaps a pack, and a
+        # cycle that is not walking the slots has no other use for it, so it is
+        # asked for once per connection instead of costing a request of its own
+        # every cycle. The value keeps being reported from the cache.
+        self.ble_mock.add_r_int(96, 2)
+        reader = self.build_reader(PackStation())
+
+        first = await reader.read(include_packs=False)
+        self.assertIn((96, 1), self.ble_mock.reads)
+        self.assertEqual(first.get(FieldName.PACK_NUM.value), 2)
+
+        self.ble_mock.reads.clear()
+
+        second = await reader.read(include_packs=False)
+        self.assertNotIn((96, 1), self.ble_mock.reads)
+        self.assertIn((36, 8), self.ble_mock.reads)
+        self.assertEqual(second.get(FieldName.PACK_NUM.value), 2)
+
+    @patch(
+        "bluetti_bt_lib.bluetooth.device_reader.PACK_SELECTOR_SETTLE_SECONDS",
+        0.01,
+    )
+    @patch(
+        "bluetti_bt_lib.bluetooth.device_reader.PACK_SELECTOR_EARLY_LOOK_SECONDS",
+        0.01,
+    )
+    async def test_pack_count_is_polled_again_on_a_walk_cycle(self):
+        # The cached count is only good enough to skip a walk with. Once a cycle
+        # does walk the slots the count has to be fresh, so a pack swapped while
+        # the station stayed connected is still noticed.
+        self.ble_mock.add_r_int(96, 1)
+        self.ble_mock.add_r_int(98, 5220)  # pack voltage
+        self.ble_mock.add_r_int(99, 45)  # pack state of charge
+        reader = self.build_reader(PackStation())
+
+        await reader.read(include_packs=False)
+        self.ble_mock.reads.clear()
+
+        await reader.read(include_packs=True)
+        self.assertIn((96, 1), self.ble_mock.reads)
+
     @patch(
         "bluetti_bt_lib.bluetooth.device_reader.PACK_SELECTOR_SETTLE_SECONDS",
         0.01,

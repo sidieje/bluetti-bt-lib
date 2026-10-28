@@ -398,6 +398,17 @@ class DeviceReader:
         self.encrypted_buffer.clear()
         self.last_notification = None
 
+    async def _recover_from_timeout(self) -> None:
+        """Get the link ready for the next cycle after a request went unanswered.
+
+        Normally that is a resync. A lost encryption session cannot be resynced
+        though: only a new connection makes the peer issue a fresh challenge.
+        """
+        if self.config.use_encryption and not self.encryption.is_ready_for_commands:
+            await self._abandon_handshake()
+        else:
+            await self._resync_link()
+
     async def _resync_link(self) -> None:
         """Reset the notification pipeline without dropping the connection.
 
@@ -741,7 +752,7 @@ class DeviceReader:
                 # to the next one, which is how a register ends up holding the
                 # value of a different register.
                 self._log_timeout("Read aborted: %s%s", err, self._cycle_note())
-                await self._resync_link()
+                await self._recover_from_timeout()
                 return None
             except TimeoutError:
                 self.logger.warning("Timeout")
@@ -822,7 +833,7 @@ class DeviceReader:
             # gets no valid answer must not be followed by another command on
             # a link that may still be carrying a late answer.
             self._log_timeout("Read aborted: %s%s", err, self._cycle_note())
-            await self._resync_link()
+            await self._recover_from_timeout()
             return None
         except TimeoutError:
             self.logger.warning("Timeout reading selected registers")
@@ -1058,6 +1069,12 @@ class DeviceReader:
         still has a retry coming is a debug line, not a warning, because the
         retry is what would otherwise have thrown away the whole cycle.
         """
+        if self.config.use_encryption and not self.encryption.is_ready_for_commands:
+            # The session was lost mid-cycle (an InvalidSignature resets it).
+            # Nothing sent over this link can be answered before a new key
+            # exchange, so this is a missing answer, not an empty one.
+            raise ResponseTimeout(registers, "encryption session lost")
+
         self.current_registers = registers
         self.notify_response = bytearray()
         self.notify_future = self.create_future()
@@ -1076,8 +1093,6 @@ class DeviceReader:
 
         # Encrypt command
         if self.config.use_encryption is True:
-            if not self.encryption.is_ready_for_commands:
-                return bytes()
             command_bytes = self.encryption.aes_encrypt(
                 command_bytes, self.encryption.secure_aes_key, None
             )

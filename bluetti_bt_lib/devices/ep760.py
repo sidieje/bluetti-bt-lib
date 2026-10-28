@@ -14,7 +14,7 @@ class EP760(BaseDeviceV2):
                 DecimalField(FieldName.PV_S2_CURRENT, 1222, 1),
                 UIntField(FieldName.SM_P1_POWER, 1228),
                 DecimalField(FieldName.SM_P1_VOLTAGE, 1229, 1),
-                UIntField(FieldName.SM_P1_CURRENT, 1230, 1),
+                DecimalField(FieldName.SM_P1_CURRENT, 1230, 1),
                 DecimalField(FieldName.GRID_FREQUENCY, 1300, 1),
                 UIntField(FieldName.GRID_P1_POWER, 1313),
                 DecimalField(FieldName.GRID_P1_VOLTAGE, 1314, 1),

@@ -7,7 +7,7 @@ from bluetti_bt_lib.devices.charger2 import (
     Charger2SilentChargingField,
     Charger2SystemSwitchField,
 )
-from bluetti_bt_lib.fields import FieldName
+from bluetti_bt_lib.fields import FieldName, SignedDecimalField
 
 
 class TestCharger2(unittest.TestCase):
@@ -146,13 +146,15 @@ class TestCharger2(unittest.TestCase):
         self.assertIn(name, sensors)
         self.assertIsNone(self.device.build_write_command(name, 120))
     def test_starter_battery_values_are_signed(self):
-        # Reverse charging read 0xFCE0 (15540) and 0xFF9C (15542): -8 A, -100 W.
-        # From the alternator they are positive: 59.84 A, 778 W.
+        # Raw dumps from a Charger 2: 0x1760/0x030A while the alternator
+        # charges through it, 0xFCE0/0xFF9C while reverse charging feeds the
+        # starter battery. multiplier=-1 flips the raw polarity so the sign
+        # matches the other signed Charger 2 fields.
         cases = {
-            (15540, "FCE0"): Decimal("-8.00"),
-            (15542, "FF9C"): Decimal("-100"),
-            (15540, "1760"): Decimal("59.84"),
-            (15542, "030A"): Decimal("778"),
+            (15540, "FCE0"): Decimal("8.00"),
+            (15542, "FF9C"): Decimal("100"),
+            (15540, "1760"): Decimal("-59.84"),
+            (15542, "030A"): Decimal("-778"),
         }
         names = {
             15540: FieldName.B_ALT_CURRENT.value,
@@ -163,6 +165,25 @@ class TestCharger2(unittest.TestCase):
             with self.subTest(address=address, register_value=hex_value):
                 parsed = self.device.parse(address, bytes.fromhex(hex_value))
                 self.assertEqual(parsed[names[address]], expected)
+
+    def test_signed_fields_share_one_sign_convention(self):
+        # A power flow card treats the sign as a direction, so every signed
+        # Charger 2 reading has to mean the same direction of flow. The raw
+        # registers do not agree: 15540/15542 are the other way round to
+        # 15536/15538/15546, so all five carry multiplier=-1.
+        signed = {
+            field.address: field
+            for field in self.device.get_sensor_fields()
+            if isinstance(field, SignedDecimalField)
+        }
+
+        self.assertEqual(
+            set(signed),
+            {15536, 15538, 15540, 15542, 15546},
+        )
+        for address, field in signed.items():
+            with self.subTest(address=address):
+                self.assertEqual(field.multiplier, -1)
 
 
 if __name__ == "__main__":

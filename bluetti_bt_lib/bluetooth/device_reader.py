@@ -61,6 +61,11 @@ STRAY_ANSWER_SECONDS = 3
 # takes a second or two.
 HANDSHAKE_TIMEOUT_SECONDS = 20
 
+# A link kept by _resync_link() is resumed by the next connect(). After this
+# many resyncs in a row without a single answer it is dropped instead, so a
+# link the stack still reports as connected cannot hold the reader forever.
+MAX_RESYNCS_ON_ONE_LINK = 3
+
 # An answer this late is worth remembering when a later request fails: a station
 # that is about to stop answering usually starts by answering slowly.
 SLOW_REQUEST_SECONDS = 1.5
@@ -124,7 +129,8 @@ class LinkStats:
     aborted: str = ""
     """The request that went unanswered, when the cycle was cut short."""
     failure: str = ""
-    """How it went unanswered: silent, partial or mismatch."""
+    """How it went unanswered: silent, partial, mismatch, or session (the
+    encryption session was gone, so nothing could be asked)."""
     received: int = 0
     """Bytes the station sent about the request it did not answer."""
     sample: str = ""
@@ -205,6 +211,10 @@ class DeviceReader:
         connection and reported from here for the rest of it, so a consumer
         still sees the same keys every cycle."""
         self._connected = False
+        self._resyncs = 0
+        """Resyncs since the kept link last answered (see MAX_RESYNCS_ON_ONE_LINK)."""
+        self._resynced_at = 0.0
+        """When the last resync gave up on a request (time.monotonic())."""
         self._answered = False
         """Whether this connection has answered a request yet. A station that
         is still waking tends to miss the first one, so that miss is logged
@@ -240,10 +250,36 @@ class DeviceReader:
         if self._connected and self.client and self.client.is_connected:
             return True
 
+        new_link = False
         try:
             if self.ble_client:
                 self.device = None
+                self.client = self.ble_client
+            elif (
+                self.client is not None
+                and self.client.is_connected
+                and self._resyncs < MAX_RESYNCS_ON_ONE_LINK
+                and (
+                    self.encryption.is_ready_for_commands
+                    or not self.config.use_encryption
+                )
+            ):
+                # _resync_link() kept this link, and its encryption session,
+                # up on purpose. Resume it: a station that does not advertise
+                # while connected is not found by a new scan, and a second
+                # establish_connection() would stack a link on the live one.
+                # A lost session is not resumed: only a new link makes the
+                # peer issue a fresh challenge.
+                self.logger.debug("Resuming the kept connection")
             else:
+                if self.client is not None and self.client.is_connected:
+                    self.logger.debug(
+                        "Not resuming the kept connection (%d resyncs, session ready: %s), dropping it",
+                        self._resyncs,
+                        self.encryption.is_ready_for_commands,
+                    )
+                    await self._mark_disconnected()
+
                 self.device = await BleakScanner.find_device_by_address(
                     self.mac, timeout=5
                 )
@@ -252,17 +288,24 @@ class DeviceReader:
                     self.logger.error("Device not found")
                     return False
 
-            self.logger.debug("Connecting to device")
+                self.logger.debug("Connecting to device")
 
-            if self.ble_client:
-                self.client = self.ble_client
-            else:
                 self.client = await establish_connection(
                     BleakClientWithServiceCache,
                     self.device,
                     self.device.name or "Unknown Device",
                     max_attempts=10,
                 )
+                # A new link means a new key exchange: a session, buffer or
+                # duplicate filter left by the previous link must not make the
+                # handshake look finished or garble the peer's first frames.
+                self.encryption.reset()
+                self.encrypted_buffer.clear()
+                self.last_notification = None
+                self._resyncs = 0
+                # The startup fields belong to the link that answered them.
+                self._startup_values.clear()
+                new_link = True
 
             # _notified_client tracks the client whose subscription is
             # confirmed live. has_notifier records that a subscription
@@ -285,6 +328,23 @@ class DeviceReader:
                 if not await self._await_handshake():
                     await self._abandon_handshake()
                     return False
+
+            if not new_link:
+                # The request a resync gave up on may still be answered on
+                # this link, and an answer of the same size would pass for
+                # the next request's. Let it land, with nothing pending,
+                # before anything is sent again.
+                quiet = (
+                    self._resynced_at
+                    + RESPONSE_TIMEOUT_SECONDS
+                    + STRAY_ANSWER_SECONDS
+                    - time.monotonic()
+                )
+                if quiet > 0:
+                    self.logger.debug(
+                        "Waiting %.1fs for a late answer before sending", quiet
+                    )
+                    await asyncio.sleep(quiet)
 
             self._connected = True
             self._answered = False
@@ -317,6 +377,14 @@ class DeviceReader:
         stack a second connection on top of a half-dead one.
         """
         self._connected = False
+        # The link may still be up (a BleakError on a live link, a supplied
+        # client): unsubscribe, or the next connect() subscribes a second time,
+        # which some backends (bleak-esphome) refuse for good.
+        if self.has_notifier and self.client and self.client.is_connected:
+            try:
+                await self.client.stop_notify(NOTIFY_UUID)
+            except Exception:
+                pass
         self.has_notifier = False
         self._notified_client = None
         self.encryption.reset()
@@ -429,6 +497,24 @@ class DeviceReader:
         self.encryption.reset()
         self.encrypted_buffer.clear()
         self.last_notification = None
+        # Like _mark_disconnected(): the infrequent fields belong to the
+        # connection that answered them, and this one is gone.
+        self._startup_values.clear()
+
+    async def _recover_from_timeout(self) -> None:
+        """Get the link ready for the next cycle after a request went unanswered.
+
+        Normally that is a resync. A lost encryption session cannot be resynced
+        though: only a new connection makes the peer issue a fresh challenge.
+        """
+        if self._session_lost():
+            await self._abandon_handshake()
+        else:
+            await self._resync_link()
+
+    def _session_lost(self) -> bool:
+        """Whether the link has no session left to carry a command."""
+        return self.config.use_encryption and not self.encryption.is_ready_for_commands
 
     async def _resync_link(self) -> None:
         """Reset the notification pipeline without dropping the connection.
@@ -449,6 +535,21 @@ class DeviceReader:
         """
         self.logger.debug("Resyncing the notification pipeline")
 
+        if self._connected:
+            # Once per failure: the pack selector restore and read() can both
+            # resync after the same one.
+            self._resyncs += 1
+        # Before anything that awaits: a second cancel there must still leave
+        # the next read() to reconnect rather than send over this link as is.
+        self._connected = False
+        self._resynced_at = time.monotonic()
+        if self.client is not None and not self.client.is_connected:
+            # The link is already gone, and its session with it. A client its
+            # owner brings back up needs a new key exchange, and the startup
+            # fields are asked for again on it.
+            self.encryption.reset()
+            self._startup_values.clear()
+
         self.current_registers = None
         self.notify_response = bytearray()
         self.notify_future = None
@@ -462,8 +563,6 @@ class DeviceReader:
                 pass
             self.has_notifier = False
             self._notified_client = None
-
-        self._connected = False
 
     async def disconnect(self):
         """Clean up the reader's notification and connection state."""
@@ -536,13 +635,14 @@ class DeviceReader:
         except Exception as err:
             # The walk's own failure is the one worth reporting, so do not let a
             # failed repair replace it. Do drop the desynced pipeline though:
-            # the answer to this write may still turn up.
+            # the answer to this write may still turn up. Or the session is
+            # what failed, and only a new link brings one back.
             self.logger.debug(
                 "Could not restore pack selector register %s: %s",
                 selector_register,
                 err,
             )
-            await self._resync_link()
+            await self._recover_from_timeout()
 
     async def _read_pack(
         self, pack: int, pack_registers: List[ReadableRegisters], raw: bool
@@ -614,29 +714,6 @@ class DeviceReader:
             # drops it from the cycle and asks for it once below instead.
             registers = self.bluetti_device.get_packless_polling_registers()
 
-        if only_registers is None:
-            # The infrequent fields are only asked for until this connection
-            # has answered them. A field that never parses stays in the cycle,
-            # so a broken read is retried rather than remembered as missing.
-            pending = [
-                f
-                for f in self.bluetti_device.startup_fields
-                if f.name not in self._startup_values
-            ]
-            if not include_packs:
-                # The pack count left the cycle above, so it is asked for the
-                # same way: once, and remembered for the rest of the
-                # connection. A cycle that does walk the slots polls it afresh,
-                # so a pack swapped while the station stayed connected is still
-                # noticed there.
-                pending += [
-                    f
-                    for f in self.bluetti_device.pack_count_fields
-                    if f.name not in self._startup_values
-                ]
-            if pending:
-                registers = registers + self.bluetti_device.coalesce_fields(pending)
-
         parsed_data: dict = {}
 
         self.logger.debug("Reading device registers")
@@ -662,6 +739,36 @@ class DeviceReader:
                         )
                         await self._abandon_handshake()
                         return None
+
+                    if only_registers is None:
+                        # The infrequent fields are only asked for until this
+                        # connection has answered them. A field that never
+                        # parses stays in the cycle, so a broken read is
+                        # retried rather than remembered as missing. Decided
+                        # once the link is up: whoever held the lock, or
+                        # connect() itself, may have dropped the connection,
+                        # and the cache with it.
+                        pending = [
+                            f
+                            for f in self.bluetti_device.startup_fields
+                            if f.name not in self._startup_values
+                        ]
+                        if not include_packs:
+                            # The pack count left the cycle above, so it is
+                            # asked for the same way: once, and remembered for
+                            # the rest of the connection. A cycle that does walk
+                            # the slots polls it afresh, so a pack swapped while
+                            # the station stayed connected is still noticed.
+                            pending += [
+                                f
+                                for f in self.bluetti_device.pack_count_fields
+                                if f.name not in self._startup_values
+                            ]
+                        if pending:
+                            registers = (
+                                registers
+                                + self.bluetti_device.coalesce_fields(pending)
+                            )
 
                     self._begin_cycle()
 
@@ -787,10 +894,13 @@ class DeviceReader:
                 # to the next one, which is how a register ends up holding the
                 # value of a different register.
                 self._log_abort(err)
-                await self._resync_link()
+                await self._recover_from_timeout()
                 return None
             except TimeoutError:
                 self.logger.warning("Timeout")
+                # Cut short mid-request like a cancelled read: the answer may
+                # still arrive, so the link is resynced the same way.
+                await self._resync_link()
                 return None
             except BleakError as err:
                 self.logger.warning("Bleak error: %s", err)
@@ -800,12 +910,13 @@ class DeviceReader:
                 await self._mark_disconnected()
                 return None
             except asyncio.CancelledError:
-                # External cancellation (e.g. HA reload/unload); the
-                # connection state is now uncertain, so drop it and let
-                # the cancellation propagate. The timeout above is
-                # converted to TimeoutError by async_timeout before it
-                # can reach this handler.
-                await self._mark_disconnected()
+                # External cancellation (e.g. HA reload/unload, or a caller's
+                # wait_for). A request may be half answered, so resync: that
+                # unsubscribes, which discards the late answer, and keeps a
+                # live link and its session usable. If the link is gone the
+                # next connect() finds out. The reader's own timeout arrives
+                # as TimeoutError instead and is resynced above.
+                await self._resync_link()
                 raise
             except BaseException as err:
                 self.logger.warning("Unknown error %s", err)
@@ -868,10 +979,11 @@ class DeviceReader:
             # gets no valid answer must not be followed by another command on
             # a link that may still be carrying a late answer.
             self._log_abort(err)
-            await self._resync_link()
+            await self._recover_from_timeout()
             return None
         except TimeoutError:
             self.logger.warning("Timeout reading selected registers")
+            await self._resync_link()
             return None
         except BleakError as err:
             self.logger.warning("Bleak error reading selected registers: %s", err)
@@ -880,7 +992,8 @@ class DeviceReader:
             await self._mark_disconnected()
             return None
         except asyncio.CancelledError:
-            await self._mark_disconnected()
+            # Same as read(): resync rather than forget a link that may be up.
+            await self._resync_link()
             raise
         except BaseException as err:
             self.logger.warning("Error reading selected registers: %s", err)
@@ -1067,6 +1180,17 @@ class DeviceReader:
         attempt = 0
         while True:
             attempt += 1
+            if self._session_lost():
+                # The session was lost mid-cycle (an InvalidSignature resets
+                # it). Nothing sent over this link can be answered before a new
+                # key exchange, so this is a missing answer, not an empty one,
+                # and not worth asking twice.
+                stats = self.link_stats
+                stats.aborted = str(registers)
+                stats.failure = "session"
+                self._cycle_aborted = True
+                raise ResponseTimeout(registers, "encryption session lost")
+
             try:
                 response = await self._send_once(
                     registers, attempt, attempt == attempts
@@ -1075,9 +1199,11 @@ class DeviceReader:
                 if attempt == attempts:
                     raise
 
-                self.link_stats.retried += 1
-                self._retry_pending = True
-                await asyncio.sleep(RETRY_PAUSE_SECONDS)
+                if not self._session_lost():
+                    # A lost session gives up on the next pass instead.
+                    self.link_stats.retried += 1
+                    self._retry_pending = True
+                    await asyncio.sleep(RETRY_PAUSE_SECONDS)
                 continue
 
             if attempt > 1:
@@ -1174,8 +1300,6 @@ class DeviceReader:
 
         # Encrypt command
         if self.config.use_encryption is True:
-            if not self.encryption.is_ready_for_commands:
-                return bytes()
             command_bytes = self.encryption.aes_encrypt(
                 command_bytes, self.encryption.secure_aes_key, None
             )
@@ -1194,6 +1318,7 @@ class DeviceReader:
             self.logger.debug("Got response (%d bytes)", len(res))
 
             self._answered = True
+            self._resyncs = 0
             self._record_answer(registers, time.monotonic() - sent_at)
 
             return cast(bytes, res)

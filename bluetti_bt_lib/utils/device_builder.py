@@ -2,11 +2,11 @@
 
 from ..base_devices import BluettiDevice
 
-from ..devices import DEVICES, DEVICE_ALIASES, DEVICE_NAME_RE
+from ..devices import DEVICES, DEVICE_ALIASES, DEVICE_NAME_RE, NORMALISED_NAME_RE
 
 
 def build_device(name: str) -> BluettiDevice | None:
-    devMatch = DEVICE_NAME_RE.match(name)
+    devMatch = DEVICE_NAME_RE.match(name) or NORMALISED_NAME_RE.match(name)
 
     if devMatch is None:
         return None

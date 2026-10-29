@@ -90,7 +90,10 @@ async def recognize_device(
                 if type_data == "":
                     continue
 
-                if DEVICE_NAME_RE.match(type_data + "12345678") is None:
+                # All of type_data must be the name, not completed by the
+                # sentinel serial ("Handsfree " + "12345678").
+                match = DEVICE_NAME_RE.match(type_data + "12345678")
+                if match is None or match[1] != type_data:
                     # Some V2 Devices populate the V1 register for type, so we need to check here
                     _LOGGER.debug(
                         "Invalid device type: profile=%s, encryption=%s, "

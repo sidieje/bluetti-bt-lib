@@ -186,6 +186,8 @@ class DeviceReader:
         self._connected = False
         self._resyncs = 0
         """Resyncs since the kept link last answered (see MAX_RESYNCS_ON_ONE_LINK)."""
+        self._resynced_at = 0.0
+        """When the last resync gave up on a request (time.monotonic())."""
         self._answered = False
         """Whether this connection has answered a request yet. A station that
         is still waking tends to miss the first one, so that miss is logged
@@ -215,6 +217,7 @@ class DeviceReader:
         if self._connected and self.client and self.client.is_connected:
             return True
 
+        new_link = False
         try:
             if self.ble_client:
                 self.device = None
@@ -223,17 +226,24 @@ class DeviceReader:
                 self.client is not None
                 and self.client.is_connected
                 and self._resyncs < MAX_RESYNCS_ON_ONE_LINK
+                and (
+                    self.encryption.is_ready_for_commands
+                    or not self.config.use_encryption
+                )
             ):
                 # _resync_link() kept this link, and its encryption session,
                 # up on purpose. Resume it: a station that does not advertise
                 # while connected is not found by a new scan, and a second
                 # establish_connection() would stack a link on the live one.
+                # A lost session is not resumed: only a new link makes the
+                # peer issue a fresh challenge.
                 self.logger.debug("Resuming the kept connection")
             else:
                 if self.client is not None and self.client.is_connected:
                     self.logger.debug(
-                        "Kept connection stayed silent through %d resyncs, dropping it",
+                        "Not resuming the kept connection (%d resyncs, session ready: %s), dropping it",
                         self._resyncs,
+                        self.encryption.is_ready_for_commands,
                     )
                     await self._mark_disconnected()
 
@@ -260,6 +270,9 @@ class DeviceReader:
                 self.encrypted_buffer.clear()
                 self.last_notification = None
                 self._resyncs = 0
+                # The startup fields belong to the link that answered them.
+                self._startup_values.clear()
+                new_link = True
 
             # _notified_client tracks the client whose subscription is
             # confirmed live. has_notifier records that a subscription
@@ -282,6 +295,23 @@ class DeviceReader:
                 if not await self._await_handshake():
                     await self._abandon_handshake()
                     return False
+
+            if not new_link:
+                # The request a resync gave up on may still be answered on
+                # this link, and an answer of the same size would pass for
+                # the next request's. Let it land, with nothing pending,
+                # before anything is sent again.
+                quiet = (
+                    self._resynced_at
+                    + RESPONSE_TIMEOUT_SECONDS
+                    + STRAY_ANSWER_SECONDS
+                    - time.monotonic()
+                )
+                if quiet > 0:
+                    self.logger.debug(
+                        "Waiting %.1fs for a late answer before sending", quiet
+                    )
+                    await asyncio.sleep(quiet)
 
             self._connected = True
             self._answered = False
@@ -449,7 +479,17 @@ class DeviceReader:
         """
         self.logger.debug("Resyncing the notification pipeline")
 
-        self._resyncs += 1
+        if self._connected:
+            # Once per failure: the pack selector restore and read() can both
+            # resync after the same one.
+            self._resyncs += 1
+        self._resynced_at = time.monotonic()
+        if self.client is not None and not self.client.is_connected:
+            # The link is already gone, and its session with it. A client its
+            # owner brings back up needs a new key exchange, and the startup
+            # fields are asked for again on it.
+            self.encryption.reset()
+            self._startup_values.clear()
 
         self.current_registers = None
         self.notify_response = bytearray()

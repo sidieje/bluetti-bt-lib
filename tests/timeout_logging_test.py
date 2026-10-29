@@ -254,7 +254,7 @@ class TestTimeoutLogging(unittest.IsolatedAsyncioTestCase):
         # occasional dropped request, and one log line cannot tell them apart.
         reader = self.make_reader(DeafMock({2, 3, 5, 6}))
 
-        with self.fast_timing():
+        with self.fast_timing(), patch.object(device_reader, "STRAY_ANSWER_SECONDS", 0):
             with self.assertLogs(reader.logger, level="DEBUG") as logs:
                 await reader.read()
                 await reader.read()

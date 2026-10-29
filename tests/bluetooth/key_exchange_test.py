@@ -30,6 +30,8 @@ def plaintext_frame(body: bytes) -> bytearray:
 
 
 class WriteCapturingClient:
+    is_connected = True
+
     def __init__(self):
         self.writes = []
 

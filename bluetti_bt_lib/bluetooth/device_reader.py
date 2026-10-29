@@ -587,22 +587,6 @@ class DeviceReader:
         self.logger.debug("Reading device registers")
 
         async with self.polling_lock:
-            if only_registers is None:
-                # The infrequent fields are only asked for until this connection
-                # has answered them. A field that never parses stays in the
-                # cycle, so a broken read is retried rather than remembered as
-                # missing. Decided under the lock: whoever held it may have
-                # dropped the connection, and the cache with it.
-                pending = [
-                    f
-                    for f in self.bluetti_device.startup_fields
-                    if f.name not in self._startup_values
-                ]
-                if pending:
-                    registers = registers + self.bluetti_device.coalesce_fields(
-                        pending
-                    )
-
             try:
                 async with async_timeout.timeout(self.config.timeout):
                     if not self._connected:
@@ -623,6 +607,25 @@ class DeviceReader:
                         )
                         await self._abandon_handshake()
                         return None
+
+                    if only_registers is None:
+                        # The infrequent fields are only asked for until this
+                        # connection has answered them. A field that never
+                        # parses stays in the cycle, so a broken read is
+                        # retried rather than remembered as missing. Decided
+                        # once the link is up: whoever held the lock, or
+                        # connect() itself, may have dropped the connection,
+                        # and the cache with it.
+                        pending = [
+                            f
+                            for f in self.bluetti_device.startup_fields
+                            if f.name not in self._startup_values
+                        ]
+                        if pending:
+                            registers = (
+                                registers
+                                + self.bluetti_device.coalesce_fields(pending)
+                            )
 
                     self._begin_cycle()
 

@@ -491,6 +491,9 @@ class DeviceReader:
             # Once per failure: the pack selector restore and read() can both
             # resync after the same one.
             self._resyncs += 1
+        # Before anything that awaits: a second cancel there must still leave
+        # the next read() to reconnect rather than send over this link as is.
+        self._connected = False
         self._resynced_at = time.monotonic()
         if self.client is not None and not self.client.is_connected:
             # The link is already gone, and its session with it. A client its
@@ -512,8 +515,6 @@ class DeviceReader:
                 pass
             self.has_notifier = False
             self._notified_client = None
-
-        self._connected = False
 
     async def disconnect(self):
         """Clean up the reader's notification and connection state."""
@@ -834,6 +835,9 @@ class DeviceReader:
                 return None
             except TimeoutError:
                 self.logger.warning("Timeout")
+                # Cut short mid-request like a cancelled read: the answer may
+                # still arrive, so the link is resynced the same way.
+                await self._resync_link()
                 return None
             except BleakError as err:
                 self.logger.warning("Bleak error: %s", err)
@@ -847,8 +851,8 @@ class DeviceReader:
                 # wait_for). A request may be half answered, so resync: that
                 # unsubscribes, which discards the late answer, and keeps a
                 # live link and its session usable. If the link is gone the
-                # next connect() finds out. The timeout above is converted to
-                # TimeoutError by async_timeout before it can reach this handler.
+                # next connect() finds out. The reader's own timeout arrives
+                # as TimeoutError instead and is resynced above.
                 await self._resync_link()
                 raise
             except BaseException as err:
@@ -916,6 +920,7 @@ class DeviceReader:
             return None
         except TimeoutError:
             self.logger.warning("Timeout reading selected registers")
+            await self._resync_link()
             return None
         except BleakError as err:
             self.logger.warning("Bleak error reading selected registers: %s", err)

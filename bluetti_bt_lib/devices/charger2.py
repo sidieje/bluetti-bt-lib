@@ -87,11 +87,21 @@ class CHARGER2(BaseDeviceV2):
                 UIntField(FieldName.BATTERY_SOC, 15584),
 
                 DecimalField(FieldName.B_ALT_VOLTAGE, 15539, 1),
-                # Starter battery side: positive while the vehicle (alternator)
-                # charges through the Charger 2, negative while reverse
-                # charging feeds the starter battery.
-                SignedDecimalField(FieldName.B_ALT_CURRENT, 15540, 2),
-                SignedDecimalField(FieldName.B_ALT_IO_POWER, 15542, 0),
+                # Starter battery side. The raw registers read positive while the
+                # vehicle (alternator) charges through the Charger 2 (seen:
+                # 0x1760 = 59.84 A, 0x030A = 778 W) and negative while reverse
+                # charging feeds the starter battery (seen: 0xFCE0 = -8.00 A,
+                # 0xFF9C = -100 W) -- the opposite raw polarity to the other
+                # signed Charger 2 registers. Flipped with multiplier=-1 so a
+                # given sign means the same direction of flow on both sides of
+                # the device, which is what the Home Assistant power flow cards
+                # the B_IO_POWER flip (15546) was chosen for rely on.
+                SignedDecimalField(
+                    FieldName.B_ALT_CURRENT, 15540, 2, multiplier=-1
+                ),
+                SignedDecimalField(
+                    FieldName.B_ALT_IO_POWER, 15542, 0, multiplier=-1
+                ),
 
                 Charger2SystemSwitchField(
                     FieldName.CTRL_SYSTEM_ON_OFF,

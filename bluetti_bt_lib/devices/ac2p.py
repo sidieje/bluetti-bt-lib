@@ -1,5 +1,5 @@
 from ..base_devices import BaseDeviceV2
-from ..fields import FieldName, UIntField, DecimalField, BoolFieldNonZero, SwitchField
+from ..fields import FieldName, UIntField, DecimalField, BoolFieldNonZero, SwitchField3IsOff
 
 
 class AC2P(BaseDeviceV2):
@@ -13,8 +13,8 @@ class AC2P(BaseDeviceV2):
     For reading AC output state, we use BoolFieldNonZero which treats only
     value 1 as True. Any other value (including 3) is treated as False.
 
-    For the control switches, we use SwitchField which writes standard
-    boolean values (0/1) that the device accepts correctly.
+    For the control switches, we use SwitchField3IsOff: it writes standard
+    boolean values (0/1), which the device accepts, and reads 3 back as off.
     """
 
     def __init__(self):
@@ -31,8 +31,8 @@ class AC2P(BaseDeviceV2):
                 BoolFieldNonZero(FieldName.DC_OUTPUT_ON, 2012),
                 BoolFieldNonZero(FieldName.POWER_LIFTING_ON, 2021),
                 # Control switches (writable)
-                SwitchField(FieldName.CTRL_AC, 2011),
-                SwitchField(FieldName.CTRL_DC, 2012),
-                SwitchField(FieldName.CTRL_POWER_LIFTING, 2021),
+                SwitchField3IsOff(FieldName.CTRL_AC, 2011),
+                SwitchField3IsOff(FieldName.CTRL_DC, 2012),
+                SwitchField3IsOff(FieldName.CTRL_POWER_LIFTING, 2021),
             ],
         )

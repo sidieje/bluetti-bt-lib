@@ -397,6 +397,9 @@ class DeviceReader:
         self.encryption.reset()
         self.encrypted_buffer.clear()
         self.last_notification = None
+        # Like _mark_disconnected(): the infrequent fields belong to the
+        # connection that answered them, and this one is gone.
+        self._startup_values.clear()
 
     async def _resync_link(self) -> None:
         """Reset the notification pipeline without dropping the connection.
@@ -579,18 +582,6 @@ class DeviceReader:
             # cycle said nothing about the slots rather than finding them empty.
             pack_registers = []
 
-        if only_registers is None:
-            # The infrequent fields are only asked for until this connection
-            # has answered them. A field that never parses stays in the cycle,
-            # so a broken read is retried rather than remembered as missing.
-            pending = [
-                f
-                for f in self.bluetti_device.startup_fields
-                if f.name not in self._startup_values
-            ]
-            if pending:
-                registers = registers + self.bluetti_device.coalesce_fields(pending)
-
         parsed_data: dict = {}
 
         self.logger.debug("Reading device registers")
@@ -616,6 +607,25 @@ class DeviceReader:
                         )
                         await self._abandon_handshake()
                         return None
+
+                    if only_registers is None:
+                        # The infrequent fields are only asked for until this
+                        # connection has answered them. A field that never
+                        # parses stays in the cycle, so a broken read is
+                        # retried rather than remembered as missing. Decided
+                        # once the link is up: whoever held the lock, or
+                        # connect() itself, may have dropped the connection,
+                        # and the cache with it.
+                        pending = [
+                            f
+                            for f in self.bluetti_device.startup_fields
+                            if f.name not in self._startup_values
+                        ]
+                        if pending:
+                            registers = (
+                                registers
+                                + self.bluetti_device.coalesce_fields(pending)
+                            )
 
                     self._begin_cycle()
 

@@ -44,7 +44,26 @@ STARTUP_FIELDS = {
 }
 
 
-def _polling_blocks(fields: List[DeviceField]) -> List[ReadableRegisters]:
+# Register 96 counts the battery packs that are installed. It is only useful to
+# the pack walk, which decides how many slots to probe, and the walk is opt-in
+# per cycle (see DeviceReader.read): a consumer that walks the slots now and
+# then was paying a whole round trip for this one register on every other cycle.
+#
+# Deliberately not folded into STARTUP_FIELDS, because the answer is not
+# permanent the way a serial number is: a pack can be swapped while the station
+# stays connected, and a consumer that does walk the slots needs to notice. The
+# reader asks for it once per connection only while the walk is switched off,
+# and polls it normally on the cycles that walk.
+PACK_COUNT_FIELDS = {
+    FieldName.PACK_NUM.value,
+}
+
+
+def _polling_blocks(
+    fields: List[DeviceField],
+    max_block: int = MAX_POLL_BLOCK,
+    max_gap: int = MAX_POLL_GAP,
+) -> List[ReadableRegisters]:
     """Cover the fields with as few read requests as those two limits allow."""
     blocks: List[ReadableRegisters] = []
 
@@ -57,8 +76,8 @@ def _polling_blocks(fields: List[DeviceField]) -> List[ReadableRegisters]:
             block_end = max(end, covered_end)
 
             if (
-                field.address - covered_end <= MAX_POLL_GAP
-                and block_end - start + 1 <= MAX_POLL_BLOCK
+                field.address - covered_end <= max_gap
+                and block_end - start + 1 <= max_block
             ):
                 blocks[-1] = ReadableRegisters(start, block_end - start + 1)
                 continue
@@ -69,6 +88,14 @@ def _polling_blocks(fields: List[DeviceField]) -> List[ReadableRegisters]:
 
 
 class BluettiDevice:
+    # Block and gap limits for this profile. The defaults are the request sizes
+    # every station is known to answer. A profile may widen them, which trades
+    # fewer round trips for a longer answer, and for a wider blast radius if
+    # that station refuses the wider read, so it is only done where the wider
+    # read has been checked against real hardware.
+    max_poll_block: int = MAX_POLL_BLOCK
+    max_poll_gap: int = MAX_POLL_GAP
+
     def __init__(
         self,
         fields: List[DeviceField],
@@ -98,16 +125,37 @@ class BluettiDevice:
         ]
 
         self.polling_registers: List[ReadableRegisters] = _polling_blocks(
-            self.polling_fields
+            self.polling_fields, self.max_poll_block, self.max_poll_gap
         )
+        # The startup set keeps the default limits even for a profile that
+        # merges harder. It is asked for once per connection rather than every
+        # cycle, so a wider block there saves no round trip, and it would put
+        # the identity and firmware fields behind a request size that has not
+        # been checked on that station.
         self.startup_registers: List[ReadableRegisters] = _polling_blocks(
             self.startup_fields
         )
         self.pack_polling_registers: List[ReadableRegisters] = []
 
+        # The same cycle minus the pack-count register, for a consumer that is
+        # not walking the slots this cycle. Left as the normal blocks unless the
+        # profile can walk slots and declares a pack-count field.
+        self.pack_count_fields: List[DeviceField] = []
+        self.packless_polling_registers: List[ReadableRegisters] = self.polling_registers
+
         # Check if we even have battery pack fields defined
         if len(self.pack_fields) == 0 or max_packs == 0:
             return
+
+        self.pack_count_fields = [
+            f for f in self.polling_fields if f.name in PACK_COUNT_FIELDS
+        ]
+        if self.pack_count_fields:
+            self.packless_polling_registers = _polling_blocks(
+                [f for f in self.polling_fields if f.name not in PACK_COUNT_FIELDS],
+                self.max_poll_block,
+                self.max_poll_gap,
+            )
 
         # Pack fields are not merged. Their bank is switched by a selector write
         # followed by a settle wait, and an AC300 was seen ignoring a merged
@@ -120,6 +168,15 @@ class BluettiDevice:
         """Returns all registers required to poll device fields"""
         return self.polling_registers
 
+    def get_packless_polling_registers(self) -> List[ReadableRegisters]:
+        """The polling blocks without the register that counts battery packs.
+
+        A cycle that is not walking the pack slots has no use for it; see
+        PACK_COUNT_FIELDS. Same fields otherwise, so the blocks are usually
+        just the polling blocks with one of them missing.
+        """
+        return self.packless_polling_registers
+
     def get_startup_registers(self) -> List[ReadableRegisters]:
         """Returns the registers for the fields that only answer once"""
         return self.startup_registers
@@ -129,6 +186,7 @@ class BluettiDevice:
 
         A block covers a range, so re-asking for the few startup fields that
         are still unanswered is cheaper than asking for the startup set again.
+        Uses the default limits, like the startup set it is re-asking for.
         """
         return _polling_blocks(fields)
 

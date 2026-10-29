@@ -34,6 +34,7 @@ Added and mostly validated by contributors (some are moved here from the HA Inte
 |-----------|---------------------------------------------------------------------------------------|---------------------|---------------|---------------|---------------|---------------|
 |AC2A       |[@ruanmed](https://github.com/ruanmed)                                                 |✅                   |✅             |✅             |✅             |✅             |
 |AC50B      |[@goetzc](https://github.com/goetzc), [@Patrick762](https://github.com/Patrick762)     |✅                   |✅             |✅             |✅             |✅             |
+|AC50P      |[@oliren](https://github.com/oliren)                                                   |✅                   |✅             |✅             |✅             |✅             |
 |AC60       |[@mzpwr](https://github.com/mzpwr)                                                     |✅                   |✅             |✅             |✅             |✅             |
 |AC60P      |[@mzpwr](https://github.com/mzpwr)                                                     |✅                   |✅             |✅             |✅             |✅             |
 |AC70P      |[@matthewpucc](https://github.com/matthewpucc)                                         |✅                   |✅             |✅             |✅             |✅             |
@@ -54,6 +55,7 @@ Added and mostly validated by contributors (some are moved here from the HA Inte
 |EP500P     |bluetti-mqtt                                                                           |✅                   |✅             |✅             |✅             |✅             |
 |EP760      |[@Apfuntimes](https://github.com/Apfuntimes)                                           |✅                   |PV             |Grid           |❌             |AC Phases      |
 |EP800      |[@jhagenk](https://github.com/jhagenk)                                                 |✅                   |❌             |❌             |❌             |❌             |
+|FP         |[@rgw3d](https://github.com/rgw3d), [@madsciencetist](https://github.com/madsciencetist)|✅                   |✅             |✅             |✅             |✅             |
 |Handsfree 2|[@pablogiaccaglia](https://github.com/pablogiaccaglia)                                 |✅                   |✅             |✅             |✅             |✅             |
 |PR30V2     |@gentoo90                                                                              |✅                   |✅             |✅             |✅             |✅             |
 |PR100V2    |shares PR30V2 register layout (pending validation)                                     |✅                   |✅             |✅             |✅             |✅             |
@@ -76,6 +78,7 @@ Added and mostly validated by contributors (some are moved here from the HA Inte
 |AC200PL    |✅     |✅     |❌           |❌             |❌             |❌                |
 |AC300      |✅     |✅     |✅           |✅             |✅             |❌                |
 |AC500      |✅     |✅     |✅           |✅             |✅             |❌                |
+|AC50P      |✅     |✅     |❌           |❌             |❌             |❌                |
 |AP300      |✅     |✅     |✅           |✅             |✅             |✅                |
 |EB3A       |✅     |✅     |❌           |❌             |❌             |❌                |
 |EL10       |✅     |✅     |❌           |❌             |❌             |✅                |
@@ -87,6 +90,7 @@ Added and mostly validated by contributors (some are moved here from the HA Inte
 |EP500      |✅     |✅     |✅           |✅             |✅             |❌                |
 |EP500P     |✅     |✅     |✅           |✅             |✅             |❌                |
 |EP600      |✅     |❌     |❌           |✅             |✅             |❌                |
+|FP         |✅     |✅     |✅           |❌             |❌             |❌                |
 |Handsfree 1|✅     |✅     |❌           |❌             |❌             |❌                |
 |Handsfree 2|✅     |✅     |❌           |❌             |❌             |❌                |
 
@@ -97,6 +101,11 @@ Elite portables, but they are only writable where an owner has confirmed the
 Bluetti app offers them, and the ranges differ per model: 5-20 W on DC and
 10-40 W on AC for the AP300, EL100 mini, EL100 V2, EL30 V2, EL200 V2 and
 EL300, and 5-10 W / 15-30 W on the EL10.
+
+The FridgePower exposes its charge limits (2022, 2023) and eco thresholds
+(2016, 2019) as read-only registers: an owner watched them follow the app, but
+the ranges the app accepts were never recorded for this unit, so nothing here
+writes them.
 
 The Charger 2 carries a different set of switches, so it gets its own table:
 
@@ -249,6 +258,20 @@ tells the causes apart:
 alone but fails in the middle of a cycle is a timing problem, a block that fails
 both ways is that register. `--packs-every N` walks the pack slots every Nth
 round, which is how a device with battery packs is tested with and without them.
+A round that is not walking does not ask for register 96 either: the number of
+packs installed only feeds the walk, so it is asked for once per connection and
+polled afresh on the rounds that walk.
+
+Some profiles merge their polling registers into blocks wider than the default
+ten registers, because every round trip is a chance to slip a byte and a chance
+to time out. The AC300, AC500, EP500 and EP500P merge to sixteen; on an AC300
+that took a round from seven requests and 1.40s to four requests and 0.80s, at
+the same retry rate. The AP300 and EL100V2 merge the same way: on an AP300
+eight requests and 1.28s became seven requests and 1.10s, while the EL100V2
+stayed at seven requests and 1.01s because its fields were already nearly
+merged. `--blocks` is how a station that has not been measured yet is checked
+before it joins that list: a station that refuses an unmapped register answers
+the whole block with an exception, which would cost every field in it.
 
 A read that goes unanswered is asked for once more before the cycle is given up
 on. Writes are never sent twice. A station that was only slow then answers both
@@ -258,9 +281,34 @@ to `STRAY_ANSWER_SECONDS` for that second answer and throws it away before it
 asks anything else; otherwise the next read of the same size would take it for
 its own. A cycle the retry saved is not logged as a warning at all, and the
 probe prints how many requests had to be asked twice, how many of those answered
-the second time, how often the reader waited for a second answer (`drained`) and
+the second time, how often the reader waited for a second answer (`drained`),
 how often one that differed from the first arrived and was thrown away
-(`discarded`).
+(`discarded`), and how many frames were ignored as repeats (`repeats`).
+
+An answer identical to the one before it is counted under `repeats` rather than
+`discarded`, because the reader drops it before the wait sees it. The wait still
+runs its full length in that case, and that costs about three seconds once per
+affected cycle. It is not shortened: on a station that repeats frames a repeat
+can land later than any shorter wait would allow, and the next read would then
+take that repeat for its own answer.
+
+A frame that arrives with junk in front of it is a different fault. The older
+towers are seen to slip a byte into the notify stream, which shifts a complete
+answer along: the buffer is then one byte longer than the answer, nothing lines
+up, and what gets thrown away is a frame that was answered correctly. The reader
+drops up to `STRAY_BYTES_TOLERATED` bytes from the front and re-checks what is
+left, which still has to pass length, slave address, function code, byte count and
+CRC. Only a shift that leaves exactly one answer behind counts, so a buffer
+holding two frames is still discarded rather than guessed at. The probe counts
+these as `shifted`.
+
+Reporting is sized to the fault rather than to the read. One bad cycle used to
+cost two warnings saying nearly the same thing, and a station that misbehaves the
+same way every forty minutes produced a pair of them each time. A cycle that was
+cut short is now reported once, and a fault of a kind that has already been
+reported stays at DEBUG for `ABORT_REPORT_WINDOW_SECONDS`; the next warning of
+that kind says how many were held back. A link that has never answered yet stays
+quiet, because a station that is still waking misses its first request.
 
 ## Adding fields
 

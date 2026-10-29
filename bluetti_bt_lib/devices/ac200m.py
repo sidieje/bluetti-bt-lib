@@ -26,7 +26,9 @@ class AC200M(BaseDeviceV1):
                 DecimalField(FieldName.INTERNAL_DC_INPUT_CURRENT, 88, 2),
                 # How many packs are installed. The reader polls it before the
                 # pack walk and uses it to stop early, but it does not say
-                # which slots are occupied, so it cannot pick them out.
+                # which slots are occupied, so it cannot pick them out. A cycle
+                # that is not walking the slots leaves it out of the cycle
+                # altogether; see bluetti_device.PACK_COUNT_FIELDS.
                 UIntField(FieldName.PACK_NUM, 96),
                 SwitchField(FieldName.CTRL_AC, 3007),
                 SwitchField(FieldName.CTRL_DC, 3008),

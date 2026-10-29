@@ -12,11 +12,16 @@ from bleak_retry_connector import BleakClientWithServiceCache, establish_connect
 from cryptography.exceptions import InvalidSignature
 
 from .encryption import BluettiEncryption, Message, MessageType, AES_BLOCK_SIZE
-from ..base_devices import BluettiDevice, STARTUP_FIELDS
+from ..base_devices import BluettiDevice, STARTUP_FIELDS, PACK_COUNT_FIELDS
 from ..const import NOTIFY_UUID, WRITE_UUID
 from ..fields import FieldName
 from ..registers import ReadableRegisters, DeviceRegister
 from ..utils.privacy import mac_loggable
+
+# The fields the reader asks for once per connection and reports from cache
+# afterwards. The pack count only joins this set on the cycles that are not
+# walking the pack slots; see bluetti_device.PACK_COUNT_FIELDS.
+_CACHED_FIELDS = STARTUP_FIELDS | PACK_COUNT_FIELDS
 
 # A station needs a moment after the pack selector is written before its pack
 # registers hold the data of the newly selected pack.
@@ -68,6 +73,18 @@ SLOW_REQUEST_SECONDS = 1.5
 # How much of an unusable answer to quote in the log. Enough to tell a late
 # reply to an earlier request from noise.
 RX_SAMPLE_BYTES = 12
+
+# How many stray bytes to tolerate in front of an answer. The older towers (the
+# AC300 among them) are seen to slip a byte into the notify stream, which shifts
+# a complete answer along: the buffer then matches no request, and what gets
+# thrown away is a frame that was answered correctly.
+STRAY_BYTES_TOLERATED = 4
+
+# How long to stay quiet about a read fault that has already been reported. A
+# station that misbehaves the same way every 45 minutes has a quirk rather than
+# a problem, and each occurrence does not need its own warning: the ones held
+# back are counted and ride along on the next one.
+ABORT_REPORT_WINDOW_SECONDS = 3600
 
 
 class ResponseTimeout(Exception):
@@ -124,6 +141,8 @@ class LinkStats:
     """Reads in this cycle that were sent a second time."""
     recovered: int = 0
     """Reads in this cycle that only answered on the second attempt."""
+    shifted: int = 0
+    """Answers rescued by dropping stray bytes from in front of the frame."""
     drained: int = 0
     """Waits for a stray second answer after a retried read (see
     _drain_stray_answer), whether or not one arrived."""
@@ -131,6 +150,11 @@ class LinkStats:
     """Stray second answers the drain actually caught and threw away. A second
     answer identical to the first is dropped earlier by the duplicate filter in
     _notification_handler and is not counted here."""
+    repeats: int = 0
+    """Notifications dropped by that duplicate filter in this cycle. On a
+    station that repeats frames (the AP300) this is normal traffic. It is also
+    the only sign that an identical second answer arrived, which is why a drain
+    can report discarded=0 and still have been needed."""
     abort_streak: int = 0
     """Cycles in a row that had an abort, not counting the one in progress."""
 
@@ -181,9 +205,11 @@ class DeviceReader:
         self.handshake_failed = False
         """Set when the key exchange cannot complete; only a reconnect fixes it."""
         self._startup_values: dict[str, Any] = {}
-        """Answers for the infrequent fields (bluetti_device.STARTUP_FIELDS).
-        They are asked for once per connection and reported from here for the
-        rest of it, so a consumer still sees the same keys every cycle."""
+        """Answers for the fields that are not asked for every cycle: the
+        infrequent ones (bluetti_device.STARTUP_FIELDS) and, on a cycle that is
+        not walking the pack slots, the pack count. They are asked for once per
+        connection and reported from here for the rest of it, so a consumer
+        still sees the same keys every cycle."""
         self._connected = False
         self._resyncs = 0
         """Resyncs since the kept link last answered (see MAX_RESYNCS_ON_ONE_LINK)."""
@@ -203,6 +229,12 @@ class DeviceReader:
         self._retry_pending = False
         """Set while a read is being asked for a second time, so the answer can
         be counted as a recovery rather than a plain answer."""
+        self._fault = ""
+        """The kind of read fault last reported at WARNING."""
+        self._fault_reported_at = 0.0
+        """When that fault was reported, for the report window."""
+        self._fault_suppressed = 0
+        """Aborts of that kind held back since it was reported."""
         # MODBUS bytes and notification frames seen about the request in
         # flight, so a timeout can say whether the station stayed quiet or
         # answered something that was not usable. _rx_unexpected keeps the start
@@ -211,7 +243,7 @@ class DeviceReader:
 
     async def connect(self) -> bool:
         """Establish a persistent connection to the device.
-        
+
         Note: This method should be called while holding the polling_lock
         to avoid race conditions. The read() method handles this automatically.
         """
@@ -678,6 +710,9 @@ class DeviceReader:
             # pack_slots key is reported, so the consumer can tell that this
             # cycle said nothing about the slots rather than finding them empty.
             pack_registers = []
+            # Register 96 only feeds that walk, so a cycle that is not walking
+            # drops it from the cycle and asks for it once below instead.
+            registers = self.bluetti_device.get_packless_polling_registers()
 
         parsed_data: dict = {}
 
@@ -718,6 +753,17 @@ class DeviceReader:
                             for f in self.bluetti_device.startup_fields
                             if f.name not in self._startup_values
                         ]
+                        if not include_packs:
+                            # The pack count left the cycle above, so it is
+                            # asked for the same way: once, and remembered for
+                            # the rest of the connection. A cycle that does walk
+                            # the slots polls it afresh, so a pack swapped while
+                            # the station stayed connected is still noticed.
+                            pending += [
+                                f
+                                for f in self.bluetti_device.pack_count_fields
+                                if f.name not in self._startup_values
+                            ]
                         if pending:
                             registers = (
                                 registers
@@ -751,7 +797,7 @@ class DeviceReader:
                         # they arrive: a cycle that fails further down should
                         # not lose them and ask for all of them again.
                         for name, value in parsed.items():
-                            if name in STARTUP_FIELDS:
+                            if name in _CACHED_FIELDS:
                                 self._startup_values[name] = value
 
                     # Register 96 counts the packs that are installed, but it
@@ -847,7 +893,7 @@ class DeviceReader:
                 # this request may still arrive and would be read as the answer
                 # to the next one, which is how a register ends up holding the
                 # value of a different register.
-                self._log_timeout("Read aborted: %s%s", err, self._cycle_note())
+                self._log_abort(err)
                 await self._recover_from_timeout()
                 return None
             except TimeoutError:
@@ -932,7 +978,7 @@ class DeviceReader:
             # Same reasoning as read(): a write verification read-back that
             # gets no valid answer must not be followed by another command on
             # a link that may still be carrying a late answer.
-            self._log_timeout("Read aborted: %s%s", err, self._cycle_note())
+            self._log_abort(err)
             await self._recover_from_timeout()
             return None
         except TimeoutError:
@@ -955,15 +1001,54 @@ class DeviceReader:
 
         return parsed_data or None
 
-    def _log_timeout(self, message: str, *args: Any) -> None:
-        """Report a request that went unanswered.
+    def _log_abort(self, err: ResponseTimeout) -> None:
+        """Report a read cycle that was cut short, once per fault.
 
-        The first request on a fresh connection is the one a waking station
-        tends to miss, which is normal and not worth a warning. Once the
-        connection has been answering, a missing answer is news.
+        The request that timed out and the cycle that was given up on used to be
+        reported separately, so one bad read cost two warnings saying the same
+        thing. One line carries both now.
+
+        A fault that repeats is a quirk of the station rather than news, so the
+        first of a kind warns and the rest are held back for
+        ABORT_REPORT_WINDOW_SECONDS, counted, and reported with the next warning.
+        A link that has never answered yet stays quiet: a station that is still
+        waking misses its first request, which is normal.
         """
+        kind = self.link_stats.failure or "unknown"
+        now = time.monotonic()
+
+        level = logging.WARNING
+        held = 0
+        if not self._answered:
+            # A station that is still waking misses its first request, which is
+            # normal and not worth alarming anyone about.
+            level = logging.DEBUG
+        elif (
+            kind == self._fault
+            and now - self._fault_reported_at < ABORT_REPORT_WINDOW_SECONDS
+        ):
+            self._fault_suppressed += 1
+            level = logging.DEBUG
+        else:
+            held = self._fault_suppressed
+            self._fault, self._fault_reported_at = kind, now
+            self._fault_suppressed = 0
+
+        extra = ""
+        if held:
+            extra = f" [{held} more the same way since the last warning]"
+
+        detail = f": {err.detail}" if err.detail else ""
         self.logger.log(
-            logging.WARNING if self._answered else logging.DEBUG, message, *args
+            level,
+            "Read aborted: no valid response to %s within %ss"
+            " (client connected: %s)%s%s%s",
+            err.registers,
+            RESPONSE_TIMEOUT_SECONDS,
+            self.client.is_connected if self.client else False,
+            detail,
+            self._cycle_note(),
+            extra,
         )
 
     def _begin_cycle(self) -> None:
@@ -987,8 +1072,10 @@ class DeviceReader:
         stats.attempts = 0
         stats.retried = 0
         stats.recovered = 0
+        stats.shifted = 0
         stats.drained = 0
         stats.discarded = 0
+        stats.repeats = 0
         self._retry_pending = False
 
     def _record_answer(self, registers: DeviceRegister, elapsed: float) -> None:
@@ -1139,6 +1226,17 @@ class DeviceReader:
         since _send_once() clears last_notification. Only an answer that
         differs is collected here, and that ends the wait early.
 
+        That costs the full STRAY_ANSWER_SECONDS whenever the two answers match,
+        and it is tempting to stop as soon as the filter reports a duplicate.
+        That is not safe. On a station that repeats frames (the Apex 300) the
+        duplicate dropped during a drain can be a repeat of the FIRST answer,
+        and a repeat can land after any quiet period short of that station's
+        repeat gap. The next request then takes it for its own answer, which is
+        the fault the drain exists to prevent; see
+        test_a_repeating_station_holds_the_drain_for_the_full_window. Stopping
+        early would need a quiet period longer than every repeat gap the station
+        has, and no station has been measured for one.
+
         How this relates to _resync_link(): both deal with an answer that is
         still on its way to a request nobody is waiting for. _resync_link()
         runs when a read is given up on (read() and read_locked()); it drops
@@ -1255,7 +1353,9 @@ class DeviceReader:
             stats.sample = self._rx_sample()
             self._cycle_aborted = True
 
-            self._log_timeout(
+            # The warning is the caller's, which can say what the abort cost;
+            # this is the detail line that goes with it.
+            self.logger.debug(
                 "No valid response to %s within %ss (client connected: %s): %s",
                 registers,
                 RESPONSE_TIMEOUT_SECONDS,
@@ -1316,6 +1416,7 @@ class DeviceReader:
         notification = bytes(data)
         if notification == self.last_notification and not self.notify_response:
             self.logger.debug("Duplicate notification ignored")
+            self.link_stats.repeats += 1
             return
         self.last_notification = notification
 
@@ -1495,6 +1596,27 @@ class DeviceReader:
 
         if len(response) == size and registers.is_valid_response(response):
             self.notify_future.set_result(response)
+            return
+
+        # A stray byte in front of a real answer shifts it along, so the buffer
+        # is longer than the answer and nothing lines up. Drop the junk and
+        # re-check what is left: it still has to pass length, slave address,
+        # function code, byte count and CRC. Only a shift that leaves exactly one
+        # answer behind counts, so a buffer holding two frames is still discarded
+        # rather than guessed at.
+        for junk in range(1, STRAY_BYTES_TOLERATED + 1):
+            shifted = response[junk:]
+            if len(shifted) != size or not registers.is_valid_response(shifted):
+                continue
+
+            self.logger.debug(
+                "Recovered the answer to %s by dropping %d stray byte(s) (%s)",
+                registers,
+                junk,
+                response[:junk].hex(),
+            )
+            self.link_stats.shifted += 1
+            self.notify_future.set_result(shifted)
             return
 
         # Not the answer to this request: a late answer to an earlier one, a

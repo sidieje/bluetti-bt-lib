@@ -15,6 +15,15 @@ from ..base_devices import BaseDeviceV2
 
 
 class EL100V2(BaseDeviceV2):
+    # Bench-tested alongside the AP300. As the layout maths predicted, this one
+    # saves no request: seven blocks either way, because 2005+10 and 2015+9
+    # only merge as far as a 16-register block is allowed to, and the cycle
+    # median held at 1.01s. Kept anyway - the station answered the 16-register
+    # read 8/8 at 0.13s, 40/40 cycles came back in full with no retries, and
+    # sharing the limits with the rest of the family costs nothing.
+    max_poll_block = 16
+    max_poll_gap = 8
+
     def __init__(self):
         super().__init__(
             [

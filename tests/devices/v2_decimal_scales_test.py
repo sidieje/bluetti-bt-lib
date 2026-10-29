@@ -14,8 +14,10 @@ class TestV2DecimalScales(unittest.TestCase):
             with self.subTest(device=cls.__name__):
                 self.assertEqual(cls().parse(1314, raw)["ac_input_voltage"], reference)
 
-    def test_smart_meter_current_scales_like_every_other_current(self):
+    def test_sm_current_scales_like_every_other_current(self):
         # The neighbouring voltages and the grid/AC currents are all 0.1 units.
+        # On the EP760, 1228-1230 is most likely PV string 3, not a smart meter
+        # (hassio-bluetti-bt#250); the SM_P1 names stay to keep entity IDs.
         for cls, addresses in ((EP600, (1230, 1238, 1246)), (EP760, (1230,))):
             for address in addresses:
                 with self.subTest(device=cls.__name__, address=address):

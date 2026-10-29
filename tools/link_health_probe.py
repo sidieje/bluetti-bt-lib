@@ -104,14 +104,6 @@ async def run_rounds(reader: DeviceReader, args) -> None:
             + (_stats_line(reader) if data is None else "")
         )
 
-        if data is None:
-            # A failed read leaves the link up with the notifier cleared.
-            # Standalone runs have to drop it themselves, otherwise the
-            # station is still connected to us, stops advertising, and every
-            # later round fails with "Device not found". Home Assistant does
-            # not hit this because it hands the reader a client it owns.
-            await reader.disconnect()
-
         await asyncio.sleep(args.gap)
 
     print(f"\n{ok}/{args.rounds} cycles answered, median {statistics.median(times):.2f}s")
@@ -148,7 +140,6 @@ async def run_blocks(reader: DeviceReader, args) -> None:
 
             if data is None:
                 kinds[reader.link_stats.failure or "unknown"] += 1
-                await reader.disconnect()
             else:
                 answered += 1
                 latencies.append(elapsed)

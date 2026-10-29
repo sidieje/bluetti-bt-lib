@@ -362,7 +362,9 @@ class TestReaderValidation(unittest.IsolatedAsyncioTestCase):
         ble_mock = ScriptedMock(deaf=True)
         ble_mock.add_r_int(PACK_NUM_REGISTER, 4)
 
-        with patch.object(device_reader, "RESPONSE_TIMEOUT_SECONDS", 0.2):
+        with patch.object(device_reader, "RESPONSE_TIMEOUT_SECONDS", 0.2), patch.object(
+            device_reader, "STRAY_ANSWER_SECONDS", 0
+        ):
             reader, values = await self._read_pack_num(ble_mock)
             self.assertIsNone(values)
 

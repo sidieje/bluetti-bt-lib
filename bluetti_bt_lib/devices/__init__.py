@@ -89,5 +89,10 @@ DEVICE_ALIASES = {
 
 # Prefixes of all currently supported devices
 DEVICE_NAME_RE = re.compile(
-    r"^(AC2A|AC2P|AC50B|AC60|AC60P|AC70|AC70P|AC180|AC180T|AC180P|AC200L|AC200M|AC200PL|AC300|AC500|AP300|CHARGER\s?2|EB3A|EL10|EL100mini|EL100V2|Elite\s200\sV2|E200V2|EL300|EL30V2|EP500|EP500P|EP600|EP760|EP800|EP2000|Handsfree\s[12]|H[12]|PR30V2|PR100V2)(\d+)$"
+    r"^(AC2A|AC2P|AC50B|AC60|AC60P|AC70|AC70P|AC180|AC180T|AC180P|AC200L|AC200M|AC200PL|AC300|AC500|AP300|CHARGER ?2|EB3A|EL10|EL100mini|EL100V2|Elite 200 V2|E200V2|EL300|EL30V2|EP500|EP500P|EP600|EP760|EP800|EP2000|Handsfree [12]|PR30V2|PR100V2)(\d+)$"
 )
+
+# The normalised Handsfree names, for build_device only. DEVICE_NAME_RE also
+# vets type registers and BLE names, where "H1"/"H2" plus digits is too little
+# to tell a Handsfree from junk.
+NORMALISED_NAME_RE = re.compile(r"^(H[12])(\d+)$")

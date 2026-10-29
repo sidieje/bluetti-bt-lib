@@ -107,7 +107,8 @@ class LinkStats:
     aborted: str = ""
     """The request that went unanswered, when the cycle was cut short."""
     failure: str = ""
-    """How it went unanswered: silent, partial or mismatch."""
+    """How it went unanswered: silent, partial, mismatch, or session (the
+    encryption session was gone, so nothing could be asked)."""
     received: int = 0
     """Bytes the station sent about the request it did not answer."""
     sample: str = ""
@@ -404,10 +405,14 @@ class DeviceReader:
         Normally that is a resync. A lost encryption session cannot be resynced
         though: only a new connection makes the peer issue a fresh challenge.
         """
-        if self.config.use_encryption and not self.encryption.is_ready_for_commands:
+        if self._session_lost():
             await self._abandon_handshake()
         else:
             await self._resync_link()
+
+    def _session_lost(self) -> bool:
+        """Whether the link has no session left to carry a command."""
+        return self.config.use_encryption and not self.encryption.is_ready_for_commands
 
     async def _resync_link(self) -> None:
         """Reset the notification pipeline without dropping the connection.
@@ -515,13 +520,14 @@ class DeviceReader:
         except Exception as err:
             # The walk's own failure is the one worth reporting, so do not let a
             # failed repair replace it. Do drop the desynced pipeline though:
-            # the answer to this write may still turn up.
+            # the answer to this write may still turn up. Or the session is
+            # what failed, and only a new link brings one back.
             self.logger.debug(
                 "Could not restore pack selector register %s: %s",
                 selector_register,
                 err,
             )
-            await self._resync_link()
+            await self._recover_from_timeout()
 
     async def _read_pack(
         self, pack: int, pack_registers: List[ReadableRegisters], raw: bool
@@ -991,6 +997,17 @@ class DeviceReader:
         attempt = 0
         while True:
             attempt += 1
+            if self._session_lost():
+                # The session was lost mid-cycle (an InvalidSignature resets
+                # it). Nothing sent over this link can be answered before a new
+                # key exchange, so this is a missing answer, not an empty one,
+                # and not worth asking twice.
+                stats = self.link_stats
+                stats.aborted = str(registers)
+                stats.failure = "session"
+                self._cycle_aborted = True
+                raise ResponseTimeout(registers, "encryption session lost")
+
             try:
                 response = await self._send_once(
                     registers, attempt, attempt == attempts
@@ -999,9 +1016,11 @@ class DeviceReader:
                 if attempt == attempts:
                     raise
 
-                self.link_stats.retried += 1
-                self._retry_pending = True
-                await asyncio.sleep(RETRY_PAUSE_SECONDS)
+                if not self._session_lost():
+                    # A lost session gives up on the next pass instead.
+                    self.link_stats.retried += 1
+                    self._retry_pending = True
+                    await asyncio.sleep(RETRY_PAUSE_SECONDS)
                 continue
 
             if attempt > 1:
@@ -1069,12 +1088,6 @@ class DeviceReader:
         still has a retry coming is a debug line, not a warning, because the
         retry is what would otherwise have thrown away the whole cycle.
         """
-        if self.config.use_encryption and not self.encryption.is_ready_for_commands:
-            # The session was lost mid-cycle (an InvalidSignature resets it).
-            # Nothing sent over this link can be answered before a new key
-            # exchange, so this is a missing answer, not an empty one.
-            raise ResponseTimeout(registers, "encryption session lost")
-
         self.current_registers = registers
         self.notify_response = bytearray()
         self.notify_future = self.create_future()

@@ -247,7 +247,9 @@ class TestSelectorRestore(unittest.IsolatedAsyncioTestCase):
 
         # The next cycle still reads three packs, not the number the aborted
         # walk would have left behind.
-        with patch.object(device_reader, "PACK_SELECTOR_SETTLE_SECONDS", 0):
+        with patch.object(device_reader, "PACK_SELECTOR_SETTLE_SECONDS", 0), patch.object(
+            device_reader, "RESPONSE_TIMEOUT_SECONDS", 0.5
+        ), patch.object(device_reader, "STRAY_ANSWER_SECONDS", 0):
             second = await reader.read()
         self.assertEqual(second.get("pack_num"), 3)
         self.assertEqual(second.get("pack_slots"), [2, 3])

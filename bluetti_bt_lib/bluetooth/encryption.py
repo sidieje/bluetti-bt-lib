@@ -170,12 +170,38 @@ class Message:
     def type(self) -> int:
         return MessageType(self.body[0])
 
-    def verify_checksum(self):
-        message_checksum = self.checksum
+    def type_label(self) -> str:
+        """The message type for a log line, without raising on an unknown one."""
+        if len(self.body) < 1:
+            return "EMPTY"
+        try:
+            return MessageType(self.body[0]).name
+        except ValueError:
+            return f"UNKNOWN({self.body[0]})"
+
+    def verify_checksum(self, context: str = "") -> bool:
+        """Check the body checksum, and name what differed when it does not match.
+
+        Returns whether the frame verified. Nothing rejects the frame yet: no run
+        has shown whether any station ever gets one of these wrong, and a
+        handshake that completes today could break if we started dropping frames
+        on faith. See issue #51.
+        """
+        where = f" [{context}]" if context else ""
+        message_checksum = bytes(self.checksum)
         computed_checksum = hexsum(self.body, len(message_checksum))
         if computed_checksum != message_checksum:
-            _LOGGER.error("Checksum error!")
-        _LOGGER.debug("Checksum OK")
+            _LOGGER.error(
+                "Checksum error%s: type=%s received=%s computed=%s frame=%s",
+                where,
+                self.type_label(),
+                message_checksum.hex(),
+                computed_checksum.hex(),
+                bytes(self.buffer).hex(),
+            )
+            return False
+        _LOGGER.debug("Checksum OK%s", where)
+        return True
 
 
 class BluettiEncryption:

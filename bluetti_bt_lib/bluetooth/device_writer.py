@@ -806,6 +806,11 @@ class DeviceWriter:
         ) * AES_BLOCK_SIZE
         return header_size + padded_len
 
+    def _kex_context(self, kind: str) -> str:
+        """Name the link a key exchange frame arrived on, for the checksum log."""
+        address = getattr(self.client, "address", "unknown")
+        return f"{type(self.bluetti_device).__name__} {address} {kind}"
+
     async def _notification_handler(self, _: int, data: bytearray):
         """Handle notifications on a connection this writer owns itself.
 
@@ -821,7 +826,7 @@ class DeviceWriter:
         message = Message(data)
 
         if message.is_pre_key_exchange:
-            message.verify_checksum()
+            message.verify_checksum(self._kex_context("plaintext"))
 
             try:
                 message_type = message.type
@@ -879,7 +884,7 @@ class DeviceWriter:
                 self.logger.debug("Ignoring frame that does not answer the write: %s", answer.hex())
             return
 
-        decrypted.verify_checksum()
+        decrypted.verify_checksum(self._kex_context("decrypted"))
         try:
             decrypted_type = decrypted.type
         except (ValueError, IndexError):

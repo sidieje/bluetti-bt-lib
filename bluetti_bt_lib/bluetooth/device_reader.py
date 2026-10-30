@@ -151,10 +151,11 @@ class LinkStats:
     answer identical to the first is dropped earlier by the duplicate filter in
     _notification_handler and is not counted here."""
     repeats: int = 0
-    """Notifications dropped by that duplicate filter in this cycle. On a
-    station that repeats frames (the AP300) this is normal traffic. It is also
-    the only sign that an identical second answer arrived, which is why a drain
-    can report discarded=0 and still have been needed."""
+    """Notifications dropped by that duplicate filter in this cycle. Only the
+    key exchange is known to repeat (the AP300 re-delivered 3 distinct pubkeys
+    25 times); 283 poll requests on that station produced none. It is also the
+    only sign that an identical second answer arrived, which is why a drain can
+    report discarded=0 and still have been needed."""
     abort_streak: int = 0
     """Cycles in a row that had an abort, not counting the one in progress."""
 
@@ -1228,14 +1229,18 @@ class DeviceReader:
 
         That costs the full STRAY_ANSWER_SECONDS whenever the two answers match,
         and it is tempting to stop as soon as the filter reports a duplicate.
-        That is not safe. On a station that repeats frames (the Apex 300) the
-        duplicate dropped during a drain can be a repeat of the FIRST answer,
-        and a repeat can land after any quiet period short of that station's
-        repeat gap. The next request then takes it for its own answer, which is
-        the fault the drain exists to prevent; see
+        That is not safe: the filter cannot tell a repeat of the FIRST answer
+        from a genuine second answer, and a repeat can land after any quiet
+        period shorter than that station's repeat gap. The next request then
+        takes it for its own answer, which is the fault the drain exists to
+        prevent; see
         test_a_repeating_station_holds_the_drain_for_the_full_window. Stopping
         early would need a quiet period longer than every repeat gap the station
-        has, and no station has been measured for one.
+        has, and no station has been measured for one. What has been measured is
+        narrower than this used to sound: the Apex 300 repeats its key exchange
+        frames, not its poll answers (0 repeats over 283 requests on 30 Oct), so
+        a repeating read path is modelled by that test rather than observed on
+        any station. The full wait is unchallenged, not confirmed.
 
         How this relates to _resync_link(): both deal with an answer that is
         still on its way to a request nobody is waiting for. _resync_link()
@@ -1406,11 +1411,13 @@ class DeviceReader:
         """Handle bt data."""
         self.logger.debug("Got new data (%d bytes)", len(data))
 
-        # Some stations (the Apex 300 among them) deliver every frame two or
-        # three times, and retry the key exchange until they see our answer.
-        # Replying to a repeat makes a second local keypair, so the peer ends
-        # up sharing a secret with a key we threw away: the handshake is
-        # confirmed on both sides and the device then ignores every command.
+        # The Apex 300 re-delivers its key exchange frames until it sees our
+        # answer: a 20 Oct trace took 25 notifications for 3 distinct pubkeys.
+        # Its poll answers are not repeated (0 repeats over 283 requests on
+        # 30 Oct), so this filter is about the handshake, not about ordinary
+        # traffic. Replying to a repeat makes a second local keypair, so the
+        # peer ends up sharing a secret with a key we threw away: the handshake
+        # is confirmed on both sides and the device then ignores every command.
         # A half-assembled answer is exempt, because its next chunk has to be
         # kept even when it looks exactly like the chunk before it.
         notification = bytes(data)

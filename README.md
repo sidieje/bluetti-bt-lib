@@ -291,9 +291,12 @@ known to repeat its poll answers, and only this probe can tell them apart.
 An answer identical to the one before it is counted under `repeats` rather than
 `discarded`, because the reader drops it before the wait sees it. The wait still
 runs its full length in that case, and that costs about three seconds once per
-affected cycle. It is not shortened: on a station that repeats frames a repeat
-can land later than any shorter wait would allow, and the next read would then
-take that repeat for its own answer.
+affected cycle. It is not shortened: a repeat of the first answer can land later
+than any shorter wait would allow, and the next read would then take that repeat
+for its own answer. Only the key exchange is known to repeat, though. An Apex
+300 that re-delivered 3 distinct pubkeys 25 times during discovery answered 283
+poll requests with no repeats at all, so the full wait is unchallenged rather
+than proven necessary.
 
 A frame that arrives with junk in front of it is a different fault. The older
 towers are seen to slip a byte into the notify stream, which shifts a complete

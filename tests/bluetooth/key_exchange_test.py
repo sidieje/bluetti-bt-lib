@@ -146,9 +146,9 @@ class TestKeyExchange(unittest.IsolatedAsyncioTestCase):
 
 
     async def test_repeated_frame_is_answered_once(self):
-        # Some stations deliver every frame two or three times. Answering a
-        # repeat twice is what leaves the peer sharing a secret with a key we
-        # threw away, after which it ignores every command.
+        # Before the dedupe, an AP300 re-delivered 3 distinct pubkeys 25 times.
+        # Answering a repeat twice is what leaves the peer sharing a secret with
+        # a key we threw away, after which it ignores every command.
         reader = self.make_reader()
         frame = plaintext_frame(
             bytes([MessageType.CHALLENGE.value, 0]) + b"\x01\x02\x03\x04"
@@ -228,10 +228,10 @@ class TestHandshakeAbandoned(unittest.IsolatedAsyncioTestCase):
 
 
 class TestRepeatedPeerPubkey(unittest.TestCase):
-    """Stations retry their pubkey until they see our answer, and some deliver
-    every frame several times. Each repeat must not make a new keypair: the
-    peer shares a secret with whichever key it accepted, so a later keypair
-    leaves the two ends agreeing on different keys and the device stops
+    """Stations retry their pubkey until they see our answer, and the Apex 300
+    re-delivers each pubkey frame several times. Each repeat must not make a new
+    keypair: the peer shares a secret with whichever key it accepted, so a later
+    keypair leaves the two ends agreeing on different keys and the device stops
     answering every command."""
 
     @staticmethod

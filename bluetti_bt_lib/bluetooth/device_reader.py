@@ -1229,18 +1229,20 @@ class DeviceReader:
 
         That costs the full STRAY_ANSWER_SECONDS whenever the two answers match,
         and it is tempting to stop as soon as the filter reports a duplicate.
-        That is not safe: the filter cannot tell a repeat of the FIRST answer
-        from a genuine second answer, and a repeat can land after any quiet
-        period shorter than that station's repeat gap. The next request then
-        takes it for its own answer, which is the fault the drain exists to
-        prevent; see
-        test_a_repeating_station_holds_the_drain_for_the_full_window. Stopping
-        early would need a quiet period longer than every repeat gap the station
-        has, and no station has been measured for one. What has been measured is
-        narrower than this used to sound: the Apex 300 repeats its key exchange
-        frames, not its poll answers (0 repeats over 283 requests on 30 Oct), so
-        a repeating read path is modelled by that test rather than observed on
-        any station. The full wait is unchallenged, not confirmed.
+        That is not safe. The two answers here came from our own retry, and the
+        filter cannot tell a repeat of the FIRST one from a genuine second one:
+        a repeat can land after any quiet period shorter than the station's
+        repeat gap, and the next request then takes it for its own answer, which
+        is the fault the drain exists to prevent. See
+        test_a_repeating_station_holds_the_drain_for_the_full_window, which
+        models that case - shorten the wait to the first duplicate and register
+        97 reads the 4 that was meant for 96. Stopping early would need a quiet
+        period longer than every repeat gap the station has, and no station has
+        been measured for one. What has been measured is narrower than this used
+        to sound: the Apex 300 repeats its key exchange frames, not its poll
+        answers (0 repeats over 283 requests on 30 Oct), so no station is known
+        to repeat a read the way that test does. The full wait is unchallenged,
+        not confirmed.
 
         How this relates to _resync_link(): both deal with an answer that is
         still on its way to a request nobody is waiting for. _resync_link()
@@ -1411,13 +1413,14 @@ class DeviceReader:
         """Handle bt data."""
         self.logger.debug("Got new data (%d bytes)", len(data))
 
-        # The Apex 300 re-delivers its key exchange frames until it sees our
-        # answer: a 20 Oct trace took 25 notifications for 3 distinct pubkeys.
-        # Its poll answers are not repeated (0 repeats over 283 requests on
-        # 30 Oct), so this filter is about the handshake, not about ordinary
-        # traffic. Replying to a repeat makes a second local keypair, so the
-        # peer ends up sharing a secret with a key we threw away: the handshake
-        # is confirmed on both sides and the device then ignores every command.
+        # Drop a notification that repeats the previous one. This exists for the
+        # key exchange, not for polling: on 20 Oct an Apex 300 re-delivered its
+        # pubkey until it saw our answer, 25 notifications for 3 distinct keys,
+        # while 283 poll requests on the same station on 30 Oct produced no
+        # repeats at all. Answering a repeat twice is what breaks the exchange:
+        # it makes a second local keypair, so the peer ends up sharing a secret
+        # with a key we threw away, the handshake is confirmed on both sides and
+        # the device then ignores every command.
         # A half-assembled answer is exempt, because its next chunk has to be
         # kept even when it looks exactly like the chunk before it.
         notification = bytes(data)

@@ -229,8 +229,13 @@ async def main() -> None:
         # Put the handler on this logger only, to keep bleak's own noise out.
         handler = logging.StreamHandler()
         handler.setFormatter(logging.Formatter("%(asctime)s %(message)s"))
-        reader.logger.addHandler(handler)
-        reader.logger.propagate = False
+        # The checksum lines come from the encryption module's own logger, and
+        # "Checksum OK" is the evidence that verification ran at all (issue #51).
+        kex_logger = logging.getLogger("bluetti_bt_lib.bluetooth.encryption")
+        kex_logger.setLevel(logging.DEBUG)
+        for logger in (reader.logger, kex_logger):
+            logger.addHandler(handler)
+            logger.propagate = False
 
     blocks = device.get_polling_registers()
     print(

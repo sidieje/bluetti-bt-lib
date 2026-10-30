@@ -1418,6 +1418,10 @@ class DeviceReader:
             self.handshake_failed = True
             return False
 
+    def _kex_context(self, kind: str) -> str:
+        """Name the link a key exchange frame arrived on, for the checksum log."""
+        return f"{type(self.bluetti_device).__name__} {self.mac} {kind}"
+
     async def _notification_handler(self, _: int, data: bytearray):
         """Handle bt data."""
         self.logger.debug("Got new data (%d bytes)", len(data))
@@ -1443,7 +1447,7 @@ class DeviceReader:
             message = Message(data)
 
             if message.is_pre_key_exchange:
-                message.verify_checksum()
+                message.verify_checksum(self._kex_context("plaintext"))
 
                 try:
                     message_type = message.type
@@ -1509,7 +1513,7 @@ class DeviceReader:
                 return
 
             if decrypted.is_pre_key_exchange:
-                decrypted.verify_checksum()
+                decrypted.verify_checksum(self._kex_context("decrypted"))
 
                 try:
                     decrypted_type = decrypted.type

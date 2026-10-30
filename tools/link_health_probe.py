@@ -69,6 +69,7 @@ async def run_rounds(reader: DeviceReader, args) -> None:
     drained = 0
     discarded = 0
     repeats = 0
+    requested = 0
 
     for round_number in range(1, args.rounds + 1):
         walk_packs = args.packs_every >= 1 and (
@@ -87,6 +88,7 @@ async def run_rounds(reader: DeviceReader, args) -> None:
         drained += stats.drained
         discarded += stats.discarded
         repeats += stats.repeats
+        requested += stats.requests
         if data is None:
             ok_or_not = "ABORT "
             failures[f"{stats.aborted} [{stats.failure}]"] += 1
@@ -100,15 +102,15 @@ async def run_rounds(reader: DeviceReader, args) -> None:
         slow = f"  slowest {stats.slowest:.2f}s" if stats.slowest else ""
         asks = f"  {stats.retried} asked again" if stats.retried else ""
         if stats.drained:
-            detail = f"{stats.discarded} discarded"
-            if stats.repeats:
-                detail += f", {stats.repeats} repeated"
-            asks += f", {stats.drained} drained ({detail})"
+            asks += f", {stats.drained} drained ({stats.discarded} discarded)"
+        # Shown whether or not the cycle was retried: a station that repeats its
+        # answers shows up here and nowhere else.
+        reps = f"  {stats.repeats} repeated" if stats.repeats else ""
         rescued = f"  {stats.shifted} shifted" if stats.shifted else ""
         print(
             f"[{round_number:>3}] {elapsed:5.2f}s  {ok_or_not}"
             f"  {stats.answered}/{stats.requests} requests"
-            f"{'' if walk_packs else '  no pack walk'}{slow}{asks}{rescued}"
+            f"{'' if walk_packs else '  no pack walk'}{slow}{asks}{reps}{rescued}"
             + (_stats_line(reader) if data is None else "")
         )
 
@@ -126,11 +128,12 @@ async def run_rounds(reader: DeviceReader, args) -> None:
         # How often the reader waited for a second answer after a retry, and
         # how often one that differed from the first actually turned up.
         print(f"{drained} drains after a retry, {discarded} stray answers discarded")
-    if repeats:
-        # Frames the duplicate filter dropped. On a station that repeats frames
-        # this is normal traffic; during a drain it is also the only sign that a
-        # second answer identical to the first arrived and was swallowed.
-        print(f"{repeats} repeated frames ignored")
+    # Frames the duplicate filter dropped. A station that repeats its answers
+    # is only visible here: the filter swallows the repeat before the reader
+    # can take it for a second answer, so it costs no retry and no missed
+    # read. Printed even when zero, because "no repeats seen in this run" is
+    # the answer to a question the handshake trace never actually tested.
+    print(f"{repeats} repeated frames ignored, {requested} requests sent")
     if worst_streak:
         print(f"longest run of cut-short cycles: {worst_streak}")
     if failures:

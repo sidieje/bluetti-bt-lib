@@ -283,7 +283,10 @@ its own. A cycle the retry saved is not logged as a warning at all, and the
 probe prints how many requests had to be asked twice, how many of those answered
 the second time, how often the reader waited for a second answer (`drained`),
 how often one that differed from the first arrived and was thrown away
-(`discarded`), and how many frames were ignored as repeats (`repeats`).
+(`discarded`), and how many frames were ignored as repeats (`repeats`). That last
+line is printed even when it is zero, and with the number of requests sent
+alongside it, because a station that repeats its key exchange frames is not
+known to repeat its poll answers, and only this probe can tell them apart.
 
 An answer identical to the one before it is counted under `repeats` rather than
 `discarded`, because the reader drops it before the wait sees it. The wait still

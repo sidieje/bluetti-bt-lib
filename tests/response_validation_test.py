@@ -333,10 +333,12 @@ class TestSecondAnswerToARetry(unittest.IsolatedAsyncioTestCase):
         await asyncio.gather(*ble_mock.tasks)
 
     async def test_a_repeating_station_holds_the_drain_for_the_full_window(self):
-        # The Apex 300 delivers most frames two or three times. A repeat can
-        # land after the answer to the second ask, so a drain that stopped at
-        # the first duplicate it saw would leave the next request to take a
-        # later repeat for its own answer.
+        # A repeating station re-delivers an answer some time after the first.
+        # The AP300 does this to its key exchange frames, and no station has
+        # been seen repeating a poll answer, so the gap here is modelled rather
+        # than measured. A drain that stopped at the first duplicate it saw
+        # would leave the next request to take a later repeat for its own
+        # answer.
         ble_mock = LateMock(latency=0.25, first=[0.45], repeats=1, repeat_gap=0.65)
         ble_mock.add_r_int(PACK_NUM_REGISTER, 4)
         ble_mock.add_r_int(PACK_NUM_REGISTER + 1, 7)

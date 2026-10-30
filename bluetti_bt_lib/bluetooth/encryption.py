@@ -268,10 +268,11 @@ class BluettiEncryption:
         peer_pubkey = pubkey_from_bytes(data)
 
         if peer_pubkey == self.peer_pubkey and self.my_privkey is not None:
-            # Stations retry the pubkey until they see our answer, and some
-            # deliver every frame several times. Making a new keypair per retry
-            # means the peer shares a secret with a key we threw away: the
-            # handshake is confirmed on both sides and every command after it is
+            # Stations retry the pubkey until they see our answer, and the Apex
+            # 300 re-delivered each pubkey frame about eight times (25
+            # notifications, 3 distinct). Making a new keypair per repeat means
+            # the peer shares a secret with a key we threw away: the handshake
+            # is confirmed on both sides and every command after it is
             # unreadable, so the device simply stops answering.
             _LOGGER.debug("Peer repeated its pubkey, reusing the local keypair")
         else:

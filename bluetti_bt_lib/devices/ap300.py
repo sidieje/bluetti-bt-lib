@@ -19,7 +19,9 @@ class AP300(BaseDeviceV2):
     # because 2005+1 and 2011+10 merge into one 16-register read. The station
     # answered that read 8/8 at a 0.13s median, no slower than the two narrow
     # reads it replaced, and 40/40 cycles answered in full with no retries;
-    # the cycle median went 1.28s to 1.10s.
+    # the cycle median went 1.28s to 1.10s. A later run over 283 requests saw no
+    # repeated frames at all: this station repeats its key exchange frames, not
+    # its poll answers.
     max_poll_block = 16
     max_poll_gap = 8
 

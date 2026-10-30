@@ -11,9 +11,7 @@ This library is provided without any warranty or support by Bluetti. I do not ta
 
 ## Projects using this library
 
-- [Home Assistant Integration](https://github.com/Patrick762/hassio-bluetti-bt)
-- MQTT Server (planned)
-- [UPS Server (NUT compatible)](https://github.com/Patrick762/nut-server-bluetti)
+- [Home Assistant Integration](https://github.com/sidieje/hassio-bluetti-bt)
 
 ## Supported Powerstations and data
 

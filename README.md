@@ -53,7 +53,7 @@ Added and mostly validated by contributors (some are moved here from the HA Inte
 |EP500P     |bluetti-mqtt                                                                           |✅                   |✅             |✅             |✅             |✅             |
 |EP760      |[@Apfuntimes](https://github.com/Apfuntimes)                                           |✅                   |PV             |Grid           |❌             |AC Phases      |
 |EP800      |[@jhagenk](https://github.com/jhagenk)                                                 |✅                   |❌             |❌             |❌             |❌             |
-|FP         |[@rgw3d](https://github.com/rgw3d), [@madsciencetist](https://github.com/madsciencetist)|✅                   |✅             |✅             |✅             |✅             |
+|FP (FridgePower)|[@rgw3d](https://github.com/rgw3d), [@madsciencetist](https://github.com/madsciencetist)|✅                   |✅             |✅             |✅             |✅             |
 |Handsfree 2|[@pablogiaccaglia](https://github.com/pablogiaccaglia)                                 |✅                   |✅             |✅             |✅             |✅             |
 |PR30V2     |@gentoo90                                                                              |✅                   |✅             |✅             |✅             |✅             |
 |PR100V2    |shares PR30V2 register layout (pending validation)                                     |✅                   |✅             |✅             |✅             |✅             |
@@ -88,7 +88,7 @@ Added and mostly validated by contributors (some are moved here from the HA Inte
 |EP500      |✅     |✅     |✅           |✅             |✅             |❌                |
 |EP500P     |✅     |✅     |✅           |✅             |✅             |❌                |
 |EP600      |✅     |❌     |❌           |✅             |✅             |❌                |
-|FP         |✅     |✅     |✅           |❌             |❌             |❌                |
+|FP (FridgePower)|✅  |✅     |✅           |❌             |❌             |❌                |
 |Handsfree 1|✅     |✅     |❌           |❌             |❌             |❌                |
 |Handsfree 2|✅     |✅     |❌           |❌             |❌             |❌                |
 

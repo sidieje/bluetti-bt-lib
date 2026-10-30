@@ -335,6 +335,15 @@ class DeviceReader:
                 # this link, and an answer of the same size would pass for
                 # the next request's. Let it land, with nothing pending,
                 # before anything is sent again.
+                #
+                # How often this path is reached is not known. 80 poll cycles
+                # on the AC300, the noisiest link we have, never got here:
+                # every dropped request was answered by the retry, so no read
+                # was given up on and nothing was ever resynced. The wait is
+                # bounded by the resync timestamp, so at Home Assistant's 20s
+                # cadence it has already expired; only a reconnect within
+                # RESPONSE_TIMEOUT_SECONDS + STRAY_ANSWER_SECONDS of a resync
+                # pays it.
                 quiet = (
                     self._resynced_at
                     + RESPONSE_TIMEOUT_SECONDS

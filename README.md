@@ -31,24 +31,28 @@ Added and mostly validated by contributors (some are moved here from the HA Inte
 |Device Name|Contributor                                                                            |total_battery_percent|dc_input_power |ac_input_power |dc_output_power|ac_output_power|
 |-----------|---------------------------------------------------------------------------------------|---------------------|---------------|---------------|---------------|---------------|
 |AC2A       |[@ruanmed](https://github.com/ruanmed)                                                 |✅                   |✅             |✅             |✅             |✅             |
+|AC2P       |register map, not validated here                                                       |✅                   |✅             |✅             |✅             |✅             |
 |AC50B      |[@goetzc](https://github.com/goetzc), [@Patrick762](https://github.com/Patrick762)     |✅                   |✅             |✅             |✅             |✅             |
 |AC50P      |[@oliren](https://github.com/oliren)                                                   |✅                   |✅             |✅             |✅             |✅             |
 |AC60       |[@mzpwr](https://github.com/mzpwr)                                                     |✅                   |✅             |✅             |✅             |✅             |
 |AC60P      |[@mzpwr](https://github.com/mzpwr)                                                     |✅                   |✅             |✅             |✅             |✅             |
 |AC70P      |[@matthewpucc](https://github.com/matthewpucc)                                         |✅                   |✅             |✅             |✅             |✅             |
 |AC180P     |@Patrick762                                                                            |✅                   |✅             |✅             |✅             |✅             |
+|AC180T     |register map, not validated here                                                       |✅                   |✅             |✅             |✅             |✅             |
 |AC200L     |bluetti-mqtt                                                                           |✅                   |✅             |✅             |✅             |✅             |
 |AC200M     |bluetti-mqtt                                                                           |✅                   |✅             |✅             |✅             |✅             |
 |AC200PL    |[@0x4E4448](https://github.com/0x4E4448)                                               |✅                   |✅             |✅             |✅             |✅             |
 |AC300      |bluetti-mqtt                                                                           |✅                   |✅             |✅             |✅             |✅             |
 |AC500      |bluetti-mqtt                                                                           |✅                   |✅             |✅             |✅             |✅             |
 |AP300      |[@seaburger](https://github.com/seaburger), [@sidieje](https://github.com/sidieje)     |✅                   |✅             |✅             |✅             |✅             |
+|Charger 2  |register map; controls validated by [@sidieje](https://github.com/sidieje), see below |✅                   |✅             |❌             |❌             |❌             |
 |EL10       |[sidieje](https://github.com/sidieje)                                                  |✅                   |✅             |✅             |✅             |✅             |
 |EL30V2     |[@dgudim](https://github.com/dgudim)                                                   |✅                   |✅             |✅             |✅             |✅             |
 |EL100mini  |[@MadPB](https://github.com/MadPB)														|✅                   |✅             |✅             |✅             |✅             |
 |EL100V2    |[@seaburger](https://github.com/seaburger), [lesolas20](https://github.com/lesolas20)  |✅                   |✅             |✅             |✅             |✅             |
 |EL300      |[@suiciety](https://github.com/suiciety)                                               |✅                   |✅             |✅             |✅             |✅             |
 |Elite 200 V2|[@nlimper](https://github.com/nlimper)                                                |✅                   |✅             |✅             |✅             |✅             |
+|EP2000     |register map, not validated here                                                       |✅                   |PV             |Grid V         |❌             |AC V             |
 |EP500      |bluetti-mqtt                                                                           |✅                   |✅             |✅             |✅             |✅             |
 |EP500P     |bluetti-mqtt                                                                           |✅                   |✅             |✅             |✅             |✅             |
 |EP760      |[@Apfuntimes](https://github.com/Apfuntimes)                                           |✅                   |PV             |Grid           |❌             |AC Phases      |
@@ -57,6 +61,14 @@ Added and mostly validated by contributors (some are moved here from the HA Inte
 |Handsfree 2|[@pablogiaccaglia](https://github.com/pablogiaccaglia)                                 |✅                   |✅             |✅             |✅             |✅             |
 |PR30V2     |@gentoo90                                                                              |✅                   |✅             |✅             |✅             |✅             |
 |PR100V2    |shares PR30V2 register layout (pending validation)                                     |✅                   |✅             |✅             |✅             |✅             |
+
+The AC2P, AC180T, EP2000 and Charger 2 rows were read off the library's register
+maps: each device is registered in `devices/__init__.py` and its fields decode,
+but no owner has reported the readings on a unit here. Charger 2 is the
+exception on controls, which are validated and get their own table below.
+EP2000 reports PV power and grid/AC voltages rather than the dc/ac power these
+columns ask for, so its cells say what it actually exposes. If any of the four
+has been validated on hardware, move the row and credit the owner.
 
 
 ## Controls

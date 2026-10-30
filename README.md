@@ -45,7 +45,7 @@ Added and mostly validated by contributors (some are moved here from the HA Inte
 |AC300      |bluetti-mqtt                                                                           |✅                   |✅             |✅             |✅             |✅             |
 |AC500      |bluetti-mqtt                                                                           |✅                   |✅             |✅             |✅             |✅             |
 |AP300      |[@seaburger](https://github.com/seaburger), [@sidieje](https://github.com/sidieje)     |✅                   |✅             |✅             |✅             |✅             |
-|Charger 2  |register map; controls validated by [@sidieje](https://github.com/sidieje), see below |✅                   |✅             |❌             |❌             |❌             |
+|Charger 2  |[@sidieje](https://github.com/sidieje)                                                 |✅                   |✅             |❌             |✅             |❌             |
 |EL10       |[sidieje](https://github.com/sidieje)                                                  |✅                   |✅             |✅             |✅             |✅             |
 |EL30V2     |[@dgudim](https://github.com/dgudim)                                                   |✅                   |✅             |✅             |✅             |✅             |
 |EL100mini  |[@MadPB](https://github.com/MadPB)														|✅                   |✅             |✅             |✅             |✅             |
@@ -62,13 +62,12 @@ Added and mostly validated by contributors (some are moved here from the HA Inte
 |PR30V2     |@gentoo90                                                                              |✅                   |✅             |✅             |✅             |✅             |
 |PR100V2    |shares PR30V2 register layout (pending validation)                                     |✅                   |✅             |✅             |✅             |✅             |
 
-The AC2P, AC180T, EP2000 and Charger 2 rows were read off the library's register
-maps: each device is registered in `devices/__init__.py` and its fields decode,
-but no owner has reported the readings on a unit here. Charger 2 is the
-exception on controls, which are validated and get their own table below.
-EP2000 reports PV power and grid/AC voltages rather than the dc/ac power these
-columns ask for, so its cells say what it actually exposes. If any of the four
-has been validated on hardware, move the row and credit the owner.
+The AC2P, AC180T and EP2000 rows were read off the library's register maps: each
+device is registered in `devices/__init__.py` and its fields decode, but no owner
+has reported the readings on a unit here. EP2000 reports PV power and grid/AC
+voltages rather than the dc/ac power these columns ask for, so its cells say what
+it actually exposes. If any of the three has been validated on hardware, move the
+row and credit the owner.
 
 
 ## Controls

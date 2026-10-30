@@ -283,14 +283,29 @@ its own. A cycle the retry saved is not logged as a warning at all, and the
 probe prints how many requests had to be asked twice, how many of those answered
 the second time, how often the reader waited for a second answer (`drained`),
 how often one that differed from the first arrived and was thrown away
-(`discarded`), and how many frames were ignored as repeats (`repeats`).
+(`discarded`), and how many frames were ignored as repeats (`repeats`). That last
+line is printed even when it is zero, and with the number of requests sent
+alongside it, because a station that repeats its key exchange frames is not
+known to repeat its poll answers, and only this probe can tell them apart.
 
 An answer identical to the one before it is counted under `repeats` rather than
 `discarded`, because the reader drops it before the wait sees it. The wait still
 runs its full length in that case, and that costs about three seconds once per
-affected cycle. It is not shortened: on a station that repeats frames a repeat
-can land later than any shorter wait would allow, and the next read would then
-take that repeat for its own answer.
+affected cycle. It is not shortened: a repeat of the first answer can land later
+than any shorter wait would allow, and the next read would then take that repeat
+for its own answer. Only the key exchange is known to repeat, though. An Apex
+300 that re-delivered 3 distinct pubkeys 25 times during discovery answered 283
+poll requests with no repeats at all, and an AC300 gave 0 repeats over 528
+requests across 80 cycles.
+
+The wait has still never caught a second answer on a bench. Two AC300 runs
+drained six times and discarded nothing, because all six dropped requests were
+silent: the station never answered the first ask late, so there was nothing to
+throw away, and each drain added three seconds to a round that had already paid
+the five second timeout. The case for keeping it is structural rather than
+counted. The AC300's own poll map puts `70+11` immediately before `86+11`, two
+blocks of the same size, and a function 03 answer does not say which register it
+answers, so a late reply to the first would be taken for the second's.
 
 A frame that arrives with junk in front of it is a different fault. The older
 towers are seen to slip a byte into the notify stream, which shifts a complete

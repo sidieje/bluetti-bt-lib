@@ -39,6 +39,17 @@ class AC300(BaseDeviceV1):
     # against 1.40s for the seven-request layout. The retry rate was the same
     # in both runs, 3 in 40, so this is a cheaper cycle rather than a
     # better-behaved link.
+    #
+    # A later pair of 40-cycle runs, with the probe's debug log actually
+    # reaching the file, is where the stray-answer wait has been seen on
+    # hardware: 6 dropped requests, all answered by the retry, 6 drains, and 0
+    # second answers discarded. The drops were silent ("the station sent
+    # nothing"), so the wait had nothing to catch and cost 3s on a round that
+    # had already paid the 5s timeout. It is still the right guard on this
+    # layout: 70+11 is immediately followed by 86+11, the same size, and a
+    # function 03 answer names no register, so a late answer to 70 would be
+    # read as the answer to 86. 0 repeated frames over 528 requests, and no
+    # resync in 80 cycles.
     max_poll_block = 16
     max_poll_gap = 8
 

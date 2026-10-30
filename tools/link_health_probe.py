@@ -116,10 +116,14 @@ async def run_rounds(reader: DeviceReader, args) -> None:
 
         await asyncio.sleep(args.gap)
 
-    print(f"\n{ok}/{args.rounds} cycles answered, median {statistics.median(times):.2f}s")
+    print(
+        f"\n{ok}/{args.rounds} cycles answered, median {statistics.median(times):.2f}s"
+    )
     if retried:
         # How much of the dropped-request problem the second ask is covering for.
-        print(f"{retried} requests asked for again, {recovered} answered the second time")
+        print(
+            f"{retried} requests asked for again, {recovered} answered the second time"
+        )
     if shifted:
         # A station that slips bytes into the stream answers correctly more often
         # than its warnings suggest; this is how much of that the reader kept.
@@ -219,6 +223,14 @@ async def main() -> None:
         DeviceReaderConfig(use_encryption=args.enc),
     )
     reader.logger.setLevel(logging.DEBUG if args.verbose else logging.WARNING)
+    if args.verbose:
+        # Setting the level is not enough: nothing is configured to print it, so
+        # the debug lines are dropped and the log looks clean when it is empty.
+        # Put the handler on this logger only, to keep bleak's own noise out.
+        handler = logging.StreamHandler()
+        handler.setFormatter(logging.Formatter("%(asctime)s %(message)s"))
+        reader.logger.addHandler(handler)
+        reader.logger.propagate = False
 
     blocks = device.get_polling_registers()
     print(
@@ -226,7 +238,9 @@ async def main() -> None:
         f"{len(device.pack_polling_registers)} pack blocks, "
         f"{device.max_packs} pack slots"
     )
-    print("poll order: " + ", ".join(f"{b.starting_address}+{b.quantity}" for b in blocks))
+    print(
+        "poll order: " + ", ".join(f"{b.starting_address}+{b.quantity}" for b in blocks)
+    )
 
     if args.blocks:
         await run_blocks(reader, args)

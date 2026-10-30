@@ -103,7 +103,7 @@ class BleakClientMock:
         self,
         char_specifier: Union[BleakGATTCharacteristic, int, str, uuid.UUID],
         data: Buffer,
-        response: bool = None,
+        response: bool | None = None,
     ) -> None:
         if self._callback is None:
             # Nobody is listening on the notify characteristic

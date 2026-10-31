@@ -9,7 +9,9 @@ here = os.path.abspath(os.path.dirname(__file__))
 with codecs.open(os.path.join(here, "README.md"), encoding="utf-8") as fh:
     long_description = "\n" + fh.read()
 
-VERSION = os.getenv("LIB_VERSION")
+# The release workflow sets LIB_VERSION from the tag. Without it setuptools gets
+# None and refuses to build, so local builds fall back to a dev placeholder.
+VERSION = os.getenv("LIB_VERSION", "0.0.0.dev0")
 DESCRIPTION = "Bluetti BT"
 
 # Setting up

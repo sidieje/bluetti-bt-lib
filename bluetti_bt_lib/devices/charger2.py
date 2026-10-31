@@ -80,8 +80,11 @@ class Charger2SilentChargingField(Charger2ControlField):
 # 0x026A for it. Two mode bits have never been seen set together.
 #
 # A live read through this library on 31 Oct 2026 answered 15626 cleanly on a
-# station that was idle: top-up selected with the switch off, which is the
-# layout above, and the mode byte survived the switch being off.
+# station that was idle, and the Bluetti app on that unit showed Reverse
+# charging = Disable, Mode = Top-up, Power = 200 W. 200 W was that unit's
+# untouched default, so a Charger 2 that has never been configured reads as
+# top-up selected with the switch off: the mode byte survives the switch being
+# off, and it has a default rather than an empty value.
 REVERSE_CHARGING_ON = 0b01
 REVERSE_CHARGING_OFF = 0b10
 
@@ -250,8 +253,10 @@ class CHARGER2(BaseDeviceV2):
                 # is the watt count itself, big-endian, with no scaling. The app
                 # allows 100-800 W (0x0064 to 0x0320), which is why the whole
                 # 16 bit word is read: above 255 W the high byte is in use.
-                # Settings seen on real units so far: 100, 150 and 200 W. Read
-                # only until the step the app accepts has been recorded.
+                # Settings seen on real units so far: 100, 150 and 200 W, of
+                # which 200 W is the default on a unit whose setting has never
+                # been changed. Read only until the step the app accepts has
+                # been recorded.
                 UIntField(FieldName.REVERSE_CHARGING_TOP_UP_POWER, 15631),
 
                 SwapStringField(FieldName.DEVICE_TYPE, 15500, 6),

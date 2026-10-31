@@ -24,10 +24,18 @@ class TestAC2P(unittest.TestCase):
     def test_switches_skip_other_values_instead_of_reading_them_as_off(self):
         for address, switch, _ in SWITCHES:
             with self.subTest(address=address):
-                with self.assertLogs("bluetti_bt_lib.base_devices.bluetti_device", "WARNING") as logs:
+                # One odd reading is reported at debug; it takes a streak of
+                # PERSISTENT_SKIP_POLLS before it is worth a warning.
+                with self.assertLogs(
+                    "bluetti_bt_lib.base_devices.bluetti_device", "DEBUG"
+                ) as logs:
                     parsed = self.device.parse(address, b"\x00\x02")
                 self.assertNotIn(switch.value, parsed)
-                self.assertIn("0x0002", logs.output[0])
+                skips = [
+                    r.getMessage() for r in logs.records if "Skipping" in r.getMessage()
+                ]
+                self.assertEqual(len(skips), 1)
+                self.assertIn("0x0002", skips[0])
 
     def test_switches_still_write_0_and_1(self):
         for value, raw in ((True, 1), (False, 0)):

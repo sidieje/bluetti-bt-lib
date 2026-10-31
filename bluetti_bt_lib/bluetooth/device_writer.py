@@ -10,6 +10,7 @@ from bleak import BleakClient
 from bleak.exc import BleakError
 
 from .encryption import AES_BLOCK_SIZE, BluettiEncryption, Message, MessageType
+from .bleak_errors import describe_bleak_error
 from ..const import NOTIFY_UUID, WRITE_UUID
 from ..base_devices import BluettiDevice
 from ..fields import EnumField
@@ -230,7 +231,7 @@ class DeviceWriter:
             return True
 
         except BleakError as err:
-            self.logger.warning("Bleak error during connect: %s", err)
+            self.logger.warning("BLE connect failed: %s", describe_bleak_error(err))
             await self._mark_disconnected()
             return False
         except asyncio.CancelledError:
@@ -635,7 +636,11 @@ class DeviceWriter:
                     else False
                 )
             except BleakError as err:
-                self.logger.warning("Bleak error: %s", err)
+                self.logger.warning(
+                    "BLE write failed: %s; the link will be rebuilt on the"
+                    " next write",
+                    describe_bleak_error(err),
+                )
                 # Drop all per-connection state (standalone writer) so
                 # the next write() reconnects, re-subscribes the
                 # notifier and re-runs the encryption handshake.

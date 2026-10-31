@@ -35,6 +35,18 @@ class DeviceRegister:
         else:
             return response[1] == self.register_action.value + 0x80
 
+    def is_partial_response(self, response: bytes) -> bool:
+        """Whether this is the start of an answer to this request.
+
+        Too short to carry a CRC, so only the bytes every answer to this command
+        shares get checked: the slave address and the function code.
+        """
+        return (
+            3 <= len(response) < self.response_size()
+            and response[0] == self.cmd[0]
+            and response[1] == self.register_action.value
+        )
+
     def is_valid_response(self, response: bytes):
         """Validates that the reponse is complete and uncorrupted"""
         if len(response) < 3:

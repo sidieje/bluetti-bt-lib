@@ -18,6 +18,11 @@ permissions:
 jobs:
   deploy:
 
+    # The PyPI token belongs to the upstream project, so a fork publishing a
+    # release would only ever fail here with a 403. Skip the job instead of
+    # leaving a red cross on every fork release.
+    if: github.repository == 'Patrick762/bluetti-bt-lib'
+
     runs-on: ubuntu-latest
 
     steps:

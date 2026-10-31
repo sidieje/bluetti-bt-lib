@@ -125,13 +125,15 @@ The Charger 2 carries a different set of switches, so it gets its own table:
 The Charger 2 reverse charging settings are reported but not writable.
 Register 15626 gives `ctrl_reverse_charging` (on/off) and
 `ctrl_reverse_charging_mode` (trickle, pulse or top-up), and 15631 gives the
-top-up power limit in watts. Turning reverse charging on pushes current into a
-car's starter battery, and the app already offers the controls, so the write
-side waits until an owner records the ranges the app accepts: the app allows
-100-800 W for top-up power but the step it accepts is unknown, and the pulse
-mode with reverse charging off has never been read from a station. They are
-named `ctrl_*` regardless, so the entity names do not change when the write
-side lands.
+top-up power limit in watts. The app shows the same three as *Reverse
+charging*, *Mode* and *Power*, and a unit whose settings have never been
+touched reports them as disabled, top-up and 200 W. Turning reverse charging
+on pushes current into a car's starter battery, and the app already offers the
+controls, so the write side waits. The app offers 100-800 W for top-up power
+in 1 W steps, but warns "High power may damage the battery" above 300 W; the
+pulse mode with reverse charging off has never been read from a station
+either. They are named `ctrl_*` regardless, so the entity names do not change
+when the write side lands.
 
 ## Installation
 

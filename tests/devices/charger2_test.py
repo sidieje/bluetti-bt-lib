@@ -2,11 +2,15 @@ import unittest
 
 from decimal import Decimal
 
+from bluetti_bt_lib.base_devices.bluetti_device import PERSISTENT_SKIP_POLLS
 from bluetti_bt_lib.devices.charger2 import (
     CHARGER2,
+    Charger2ReverseChargingField,
+    Charger2ReverseChargingModeField,
     Charger2SilentChargingField,
     Charger2SystemSwitchField,
 )
+from bluetti_bt_lib.enums import ReverseChargingMode
 from bluetti_bt_lib.fields import FieldName, SignedDecimalField
 
 
@@ -21,6 +25,9 @@ class TestCharger2(unittest.TestCase):
             15600,
         )
         self.device = CHARGER2()
+
+    def joined(self, logs) -> str:
+        return "\n".join(r.getMessage() for r in logs.records)
 
     def test_all_four_register_states(self):
         expected = {
@@ -51,51 +58,89 @@ class TestCharger2(unittest.TestCase):
     def test_unknown_control_word_skips_only_the_controls(self):
         # A station that reads 0x001E at 15600 for a minute after a hard
         # disconnect must not lose the whole cycle, only the two controls.
-        with self.assertLogs("bluetti_bt_lib.base_devices.bluetti_device", "WARNING") as logs:
+        with self.assertLogs(
+            "bluetti_bt_lib.base_devices.bluetti_device", "DEBUG"
+        ) as logs:
             parsed = self.device.parse(15600, bytes.fromhex("001E"))
-        self.assertEqual(parsed, {})
-        self.assertEqual(len(logs.records), 2)
-        self.assertIn("0x001E", logs.output[0])
 
-    def test_the_same_unknown_value_warns_once(self):
-        # Polled every 20 s, a station that sits on 0x001E for a minute would
-        # repeat the same two warnings on every poll. The first poll warns,
-        # the ones after it are DEBUG.
+        self.assertEqual(parsed, {})
+        skips = [r for r in logs.records if "Skipping" in r.getMessage()]
+        self.assertEqual(len(skips), 1)
+        self.assertIn("0x001E", skips[0].getMessage())
+
+    def test_two_fields_on_one_register_report_once(self):
+        # ctrl_system_on_off and ctrl_silent_charging are the same register, so
+        # one bad word there is one fault. It used to cost two warnings.
+        with self.assertLogs(
+            "bluetti_bt_lib.base_devices.bluetti_device", "DEBUG"
+        ) as logs:
+            self.device.parse(15600, bytes.fromhex("0089"))
+
+        skips = [r for r in logs.records if "Skipping" in r.getMessage()]
+        self.assertEqual(len(skips), 1)
+
+    def test_a_brief_unknown_value_stays_quiet(self):
+        # A Charger 2 that wakes with solar input reads 0x0089 for a cycle or
+        # two. That is worth a debug line, not a warning in the HA log.
         logger = "bluetti_bt_lib.base_devices.bluetti_device"
         with self.assertLogs(logger, "DEBUG") as logs:
-            for _ in range(3):
-                self.assertEqual(self.device.parse(15600, bytes.fromhex("001E")), {})
+            for _ in range(PERSISTENT_SKIP_POLLS - 1):
+                self.assertEqual(
+                    self.device.parse(15600, bytes.fromhex("0089")), {}
+                )
+
+        self.assertEqual(
+            [r.levelname for r in logs.records if "Skipping" in r.getMessage()],
+            ["DEBUG"] * (PERSISTENT_SKIP_POLLS - 1),
+        )
+
+    def test_an_unknown_value_that_persists_warns_once(self):
+        # Polled every 20 s, a station that sits on 0x001E keeps saying the same
+        # thing. The streak is what warns, and it warns once.
+        logger = "bluetti_bt_lib.base_devices.bluetti_device"
+        with self.assertLogs(logger, "DEBUG") as logs:
+            for _ in range(PERSISTENT_SKIP_POLLS + 1):
+                self.assertEqual(
+                    self.device.parse(15600, bytes.fromhex("001E")), {}
+                )
 
         skips = [r for r in logs.records if "Skipping" in r.getMessage()]
         self.assertEqual(
-            [r.levelname for r in skips], ["WARNING"] * 2 + ["DEBUG"] * 4
+            [r.levelname for r in skips],
+            ["DEBUG"] * (PERSISTENT_SKIP_POLLS - 1) + ["WARNING", "DEBUG"],
         )
+        warning = next(r for r in skips if r.levelname == "WARNING")
+        self.assertIn(f"{PERSISTENT_SKIP_POLLS} poll(s) in a row", warning.getMessage())
 
-    def test_a_different_unknown_value_warns_again(self):
+    def test_a_different_unknown_value_starts_the_streak_over(self):
         logger = "bluetti_bt_lib.base_devices.bluetti_device"
         with self.assertLogs(logger, "DEBUG") as logs:
-            self.device.parse(15600, bytes.fromhex("001E"))
-            self.device.parse(15600, bytes.fromhex("001E"))
+            for _ in range(PERSISTENT_SKIP_POLLS - 1):
+                self.device.parse(15600, bytes.fromhex("001E"))
             self.device.parse(15600, bytes.fromhex("001F"))
 
-        warnings = [r.getMessage() for r in logs.records if r.levelname == "WARNING"]
-        self.assertEqual(len(warnings), 4)
-        self.assertIn("0x001F", warnings[2])
-        self.assertIn("1 more skipped reads of the previous value", warnings[2])
+        skips = [r for r in logs.records if "Skipping" in r.getMessage()]
+        self.assertEqual([r.levelname for r in skips], ["DEBUG"] * len(skips))
+        self.assertIn("1 poll", skips[-1].getMessage())
+        self.assertIn("0x001F", skips[-1].getMessage())
 
-    def test_an_unknown_value_warns_again_after_a_known_one(self):
+    def test_the_streak_restarts_after_a_known_value(self):
         # Once the field parses again it starts over: the same fault later on
-        # is news again.
+        # has to build a streak again before it speaks up.
         logger = "bluetti_bt_lib.base_devices.bluetti_device"
         with self.assertLogs(logger, "DEBUG") as logs:
-            self.device.parse(15600, bytes.fromhex("001E"))
+            for _ in range(PERSISTENT_SKIP_POLLS):
+                self.device.parse(15600, bytes.fromhex("001E"))
             parsed = self.device.parse(15600, bytes.fromhex("5529"))
-            self.device.parse(15600, bytes.fromhex("001E"))
+            for _ in range(PERSISTENT_SKIP_POLLS - 1):
+                self.device.parse(15600, bytes.fromhex("001E"))
 
         self.assertEqual(parsed[FieldName.CTRL_SYSTEM_ON_OFF.value], True)
-        warnings = [r for r in logs.records if r.levelname == "WARNING"]
-        self.assertEqual(len(warnings), 4)
-        self.assertIn("parses again", logs.output[2])
+        self.assertEqual(
+            [r.levelname for r in logs.records if r.levelname == "WARNING"],
+            ["WARNING"],
+        )
+        self.assertIn("parses again", self.joined(logs))
 
     def test_known_control_word_still_parses_both_controls(self):
         parsed = self.device.parse(15600, bytes.fromhex("5529"))
@@ -145,6 +190,108 @@ class TestCharger2(unittest.TestCase):
         sensors = [field.name for field in self.device.get_sensor_fields()]
         self.assertIn(name, sensors)
         self.assertIsNone(self.device.build_write_command(name, 120))
+
+    def test_top_up_power_reads_the_whole_word(self):
+        # The app allows 100-800 W, so the value passes 255 and the high byte is
+        # in use: 800 W reads 0x0320, not 0x0020. 300 W is a setting an owner
+        # made in the app and read back through this library.
+        name = FieldName.REVERSE_CHARGING_TOP_UP_POWER.value
+        parsed = self.device.parse(15631, bytes.fromhex("0320"))
+        self.assertEqual(parsed[name], 800)
+        parsed = self.device.parse(15631, bytes.fromhex("012C"))
+        self.assertEqual(parsed[name], 300)
+
+    def test_reverse_charging_states_seen_on_a_device(self):
+        # Five dumps from a Charger 2 on 26 Oct 2026, taken while the Bluetti
+        # app changed the mode. Pulse with the switch off has never been dumped.
+        expected = {
+            "0169": (True, ReverseChargingMode.TRICKLE),
+            "0269": (True, ReverseChargingMode.PULSE),
+            "0469": (True, ReverseChargingMode.TOP_UP),
+            "016A": (False, ReverseChargingMode.TRICKLE),
+            "046A": (False, ReverseChargingMode.TOP_UP),
+        }
+
+        for hex_value, (on, mode) in expected.items():
+            with self.subTest(register_value=hex_value):
+                parsed = self.device.parse(15626, bytes.fromhex(hex_value))
+                self.assertEqual(
+                    parsed[FieldName.CTRL_REVERSE_CHARGING.value], on
+                )
+                self.assertEqual(
+                    parsed[FieldName.CTRL_REVERSE_CHARGING_MODE.value], mode
+                )
+
+    def test_unknown_reverse_charging_word_skips_only_those_fields(self):
+        # 0x0368 has two mode bits set and no switch state, which is not a
+        # layout the app has ever produced. The rest of the cycle stays.
+        with self.assertLogs(
+            "bluetti_bt_lib.base_devices.bluetti_device", "DEBUG"
+        ) as logs:
+            parsed = self.device.parse(15626, bytes.fromhex("0368"))
+
+        self.assertEqual(parsed, {})
+        skips = [r for r in logs.records if "Skipping" in r.getMessage()]
+        self.assertEqual(len(skips), 1)
+        self.assertIn("0x0368", skips[0].getMessage())
+
+    def test_late_answer_from_15600_is_not_read_as_on(self):
+        # 0x5529 ends in 0b01, which is the "on" pair, but 0x55 is not a mode.
+        # A shifted answer from register 15600 has landed on 15626 before, so
+        # the high byte has to agree before the switch bits mean anything.
+        for hex_value in ("5529", "AA2A", "0001"):
+            with self.subTest(register_value=hex_value):
+                with self.assertLogs(
+                    "bluetti_bt_lib.base_devices.bluetti_device", "DEBUG"
+                ):
+                    parsed = self.device.parse(15626, bytes.fromhex(hex_value))
+                self.assertEqual(parsed, {})
+
+    def test_reverse_charging_is_reported_but_not_writeable(self):
+        # Reading 15626 is safe; writing it pushes current into a car's starter
+        # battery, so it stays out of reach until the write side is proven.
+        switches = [f.name for f in self.device.get_switch_fields()]
+        selects = [f.name for f in self.device.get_select_fields()]
+        bools = [f.name for f in self.device.get_bool_fields()]
+        sensors = [f.name for f in self.device.get_sensor_fields()]
+
+        self.assertIn(FieldName.CTRL_REVERSE_CHARGING.value, bools)
+        self.assertIn(FieldName.CTRL_REVERSE_CHARGING_MODE.value, sensors)
+        self.assertNotIn(FieldName.CTRL_REVERSE_CHARGING.value, switches)
+        self.assertNotIn(FieldName.CTRL_REVERSE_CHARGING_MODE.value, selects)
+
+        for field_name, value in (
+            (FieldName.CTRL_REVERSE_CHARGING.value, True),
+            (FieldName.CTRL_REVERSE_CHARGING_MODE.value, "PULSE"),
+        ):
+            with self.subTest(field=field_name):
+                self.assertIsNone(self.device.build_write_command(field_name, value))
+
+    def test_reverse_charging_compose_keeps_the_rest_of_the_word(self):
+        # Groundwork for the write side: each field changes only its own half of
+        # 15626 and refuses a word it does not recognise, so a write can never
+        # zero the mode byte or the switch along with it.
+        switch = Charger2ReverseChargingField(
+            FieldName.CTRL_REVERSE_CHARGING, 15626
+        )
+        mode = Charger2ReverseChargingModeField(
+            FieldName.CTRL_REVERSE_CHARGING_MODE, 15626
+        )
+
+        self.assertEqual(switch.compose(0x046A, True), 0x0469)
+        self.assertEqual(switch.compose(0x0469, False), 0x046A)
+        self.assertEqual(mode.compose(0x046A, "PULSE"), 0x026A)
+        self.assertEqual(mode.compose(0x0169, ReverseChargingMode.TOP_UP), 0x0469)
+        # The pulse/off word the app has never been dumped producing.
+        self.assertEqual(mode.compose(0x016A, "PULSE"), 0x026A)
+        self.assertEqual(switch.compose(0x026A, True), 0x0269)
+
+        self.assertIsNone(switch.compose(0x0468, True))
+        self.assertIsNone(switch.compose(0x046A, 1))
+        self.assertIsNone(mode.compose(0x046A, "TURBO"))
+        self.assertIsNone(switch.compose(0x5529, True))
+        self.assertIsNone(mode.compose(0x5529, "PULSE"))
+
     def test_starter_battery_values_are_signed(self):
         # Raw dumps from a Charger 2: 0x1760/0x030A while the alternator
         # charges through it, 0xFCE0/0xFF9C while reverse charging feeds the

@@ -3,6 +3,7 @@ from .display_mode import *
 from .eco_mode import *
 from .led_mode import *
 from .output_mode import *
+from .reverse_charging_mode import *
 from .split_phase_mode import *
 from .working_mode_v2 import *
 from .working_mode_v2_alt import *

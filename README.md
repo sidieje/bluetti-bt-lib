@@ -11,9 +11,7 @@ This library is provided without any warranty or support by Bluetti. I do not ta
 
 ## Projects using this library
 
-- [Home Assistant Integration](https://github.com/Patrick762/hassio-bluetti-bt)
-- MQTT Server (planned)
-- [UPS Server (NUT compatible)](https://github.com/Patrick762/nut-server-bluetti)
+- [Home Assistant Integration](https://github.com/sidieje/hassio-bluetti-bt)
 
 ## Supported Powerstations and data
 
@@ -33,32 +31,43 @@ Added and mostly validated by contributors (some are moved here from the HA Inte
 |Device Name|Contributor                                                                            |total_battery_percent|dc_input_power |ac_input_power |dc_output_power|ac_output_power|
 |-----------|---------------------------------------------------------------------------------------|---------------------|---------------|---------------|---------------|---------------|
 |AC2A       |[@ruanmed](https://github.com/ruanmed)                                                 |✅                   |✅             |✅             |✅             |✅             |
+|AC2P       |register map, not validated here                                                       |✅                   |✅             |✅             |✅             |✅             |
 |AC50B      |[@goetzc](https://github.com/goetzc), [@Patrick762](https://github.com/Patrick762)     |✅                   |✅             |✅             |✅             |✅             |
 |AC50P      |[@oliren](https://github.com/oliren)                                                   |✅                   |✅             |✅             |✅             |✅             |
 |AC60       |[@mzpwr](https://github.com/mzpwr)                                                     |✅                   |✅             |✅             |✅             |✅             |
 |AC60P      |[@mzpwr](https://github.com/mzpwr)                                                     |✅                   |✅             |✅             |✅             |✅             |
 |AC70P      |[@matthewpucc](https://github.com/matthewpucc)                                         |✅                   |✅             |✅             |✅             |✅             |
 |AC180P     |@Patrick762                                                                            |✅                   |✅             |✅             |✅             |✅             |
+|AC180T     |register map, not validated here                                                       |✅                   |✅             |✅             |✅             |✅             |
 |AC200L     |bluetti-mqtt                                                                           |✅                   |✅             |✅             |✅             |✅             |
 |AC200M     |bluetti-mqtt                                                                           |✅                   |✅             |✅             |✅             |✅             |
 |AC200PL    |[@0x4E4448](https://github.com/0x4E4448)                                               |✅                   |✅             |✅             |✅             |✅             |
 |AC300      |bluetti-mqtt                                                                           |✅                   |✅             |✅             |✅             |✅             |
 |AC500      |bluetti-mqtt                                                                           |✅                   |✅             |✅             |✅             |✅             |
 |AP300      |[@seaburger](https://github.com/seaburger), [@sidieje](https://github.com/sidieje)     |✅                   |✅             |✅             |✅             |✅             |
+|Charger 2  |[@sidieje](https://github.com/sidieje)                                                 |✅                   |✅             |❌             |✅             |❌             |
 |EL10       |[sidieje](https://github.com/sidieje)                                                  |✅                   |✅             |✅             |✅             |✅             |
 |EL30V2     |[@dgudim](https://github.com/dgudim)                                                   |✅                   |✅             |✅             |✅             |✅             |
 |EL100mini  |[@MadPB](https://github.com/MadPB)														|✅                   |✅             |✅             |✅             |✅             |
 |EL100V2    |[@seaburger](https://github.com/seaburger), [lesolas20](https://github.com/lesolas20)  |✅                   |✅             |✅             |✅             |✅             |
 |EL300      |[@suiciety](https://github.com/suiciety)                                               |✅                   |✅             |✅             |✅             |✅             |
 |Elite 200 V2|[@nlimper](https://github.com/nlimper)                                                |✅                   |✅             |✅             |✅             |✅             |
+|EP2000     |register map, not validated here                                                       |✅                   |PV             |Grid V         |❌             |AC V             |
 |EP500      |bluetti-mqtt                                                                           |✅                   |✅             |✅             |✅             |✅             |
 |EP500P     |bluetti-mqtt                                                                           |✅                   |✅             |✅             |✅             |✅             |
 |EP760      |[@Apfuntimes](https://github.com/Apfuntimes)                                           |✅                   |PV             |Grid           |❌             |AC Phases      |
 |EP800      |[@jhagenk](https://github.com/jhagenk)                                                 |✅                   |❌             |❌             |❌             |❌             |
-|FP         |[@rgw3d](https://github.com/rgw3d), [@madsciencetist](https://github.com/madsciencetist)|✅                   |✅             |✅             |✅             |✅             |
+|FP (FridgePower)|[@rgw3d](https://github.com/rgw3d), [@madsciencetist](https://github.com/madsciencetist)|✅                   |✅             |✅             |✅             |✅             |
 |Handsfree 2|[@pablogiaccaglia](https://github.com/pablogiaccaglia)                                 |✅                   |✅             |✅             |✅             |✅             |
 |PR30V2     |@gentoo90                                                                              |✅                   |✅             |✅             |✅             |✅             |
 |PR100V2    |shares PR30V2 register layout (pending validation)                                     |✅                   |✅             |✅             |✅             |✅             |
+
+The AC2P, AC180T and EP2000 rows were read off the library's register maps: each
+device is registered in `devices/__init__.py` and its fields decode, but no owner
+has reported the readings on a unit here. EP2000 reports PV power and grid/AC
+voltages rather than the dc/ac power these columns ask for, so its cells say what
+it actually exposes. If any of the three has been validated on hardware, move the
+row and credit the owner.
 
 
 ## Controls
@@ -90,7 +99,7 @@ Added and mostly validated by contributors (some are moved here from the HA Inte
 |EP500      |✅     |✅     |✅           |✅             |✅             |❌                |
 |EP500P     |✅     |✅     |✅           |✅             |✅             |❌                |
 |EP600      |✅     |❌     |❌           |✅             |✅             |❌                |
-|FP         |✅     |✅     |✅           |❌             |❌             |❌                |
+|FP (FridgePower)|✅  |✅     |✅           |❌             |❌             |❌                |
 |Handsfree 1|✅     |✅     |❌           |❌             |❌             |❌                |
 |Handsfree 2|✅     |✅     |❌           |❌             |❌             |❌                |
 
@@ -112,6 +121,19 @@ The Charger 2 carries a different set of switches, so it gets its own table:
 |Device Name|ctrl_system_on_off|ctrl_silent_charging|
 |-----------|------------------|---------------------|
 |Charger 2  |✅                |✅                   |
+
+The Charger 2 reverse charging settings are reported but not writable.
+Register 15626 gives `ctrl_reverse_charging` (on/off) and
+`ctrl_reverse_charging_mode` (trickle, pulse or top-up), and 15631 gives the
+top-up power limit in watts. The app shows the same three as *Reverse
+charging*, *Mode* and *Power*, and a unit whose settings have never been
+touched reports them as disabled, top-up and 200 W. Turning reverse charging
+on pushes current into a car's starter battery, and the app already offers the
+controls, so the write side waits. The app offers 100-800 W for top-up power
+in 1 W steps, but warns "High power may damage the battery" above 300 W; the
+pulse mode with reverse charging off has never been read from a station
+either. They are named `ctrl_*` regardless, so the entity names do not change
+when the write side lands.
 
 ## Installation
 
@@ -186,7 +208,7 @@ bluetti-read -m 00:00:00:00:00:00 -t EB3A
 Example output:
 ```bash
 FieldName.DEVICE_TYPE: EB3A
-FieldName.DEVICE_SN: 0000000000000
+FieldName.DEVICE_SN: 2300000000000
 FieldName.BATTERY_SOC: 92%
 FieldName.DC_INPUT_POWER: 0W
 FieldName.AC_INPUT_POWER: 0W

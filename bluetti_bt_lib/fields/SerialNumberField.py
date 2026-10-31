@@ -7,7 +7,7 @@ class SerialNumberField(DeviceField):
     def __init__(self, name: FieldName, address: int):
         super().__init__(name, address, 4)
 
-    def parse(self, data: bytes) -> str | None:
+    def parse(self, data: bytes) -> int | None:
         if len(data) != 8:
             return None
 

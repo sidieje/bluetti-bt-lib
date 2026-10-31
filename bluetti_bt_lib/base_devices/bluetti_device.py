@@ -19,6 +19,14 @@ _LOGGER = logging.getLogger(__name__)
 MAX_POLL_BLOCK = 10
 MAX_POLL_GAP = 4
 
+# How many polls in a row a field has to be unparseable before it is worth a
+# warning. A station that is waking up reports a control word that is not in the
+# table for a cycle or two (a Charger 2 reads 0x0089 at 15600 as it comes up
+# with solar input, and 0x001E for a minute after a hard disconnect), and the
+# field is back on the next poll. A value that keeps failing is a different
+# matter, so the streak is what speaks up.
+PERSISTENT_SKIP_POLLS = 3
+
 # Other fields describe the station rather than what it is doing: its identity,
 # its firmware, and the Wi-Fi name it was last told to use. Those only change
 # when someone intervenes, so asking for them every cycle is traffic that
@@ -109,6 +117,8 @@ class BluettiDevice:
         # Per field that parse() had to leave out: the reason last reported,
         # and how many reads of that same value were skipped quietly since.
         self._skipped_fields: dict[str, tuple[str, int]] = {}
+        # Registers already reported for the block being parsed right now.
+        self._skipped_block: set[int] = set()
 
         self.fields.sort(key=lambda f: f.address)
         self.pack_fields.sort(key=lambda f: f.address)
@@ -242,6 +252,11 @@ class BluettiDevice:
 
         # Parse fields
         parsed = {}
+        # Two fields can sit on one register (ctrl_system_on_off and
+        # ctrl_silent_charging are both register 15600 on a Charger 2), so one
+        # bad word there is one fault. Only the first field to trip over an
+        # address in this block reports it.
+        self._skipped_block.clear()
         for f in fields:
             data_start = 2 * (f.address - starting_address)
             field_data = data[data_start : data_start + 2 * f.size]
@@ -265,7 +280,7 @@ class BluettiDevice:
                 # 2 * f.size bytes long. A struct.error would mean a field
                 # whose parse() disagrees with its own size, which is a bug in
                 # that field and should fail loudly rather than be skipped.
-                self._report_skipped_field(key, err)
+                self._report_skipped_field(key, err, f)
                 continue
             self._clear_skipped_field(key)
             if not f.in_range(value):
@@ -274,34 +289,55 @@ class BluettiDevice:
 
         return parsed
 
-    def _report_skipped_field(self, key: str, err: ValueError) -> None:
-        """Log a field that was left out, once per field and value.
+    def _report_skipped_field(
+        self, key: str, err: ValueError, field: FieldName
+    ) -> None:
+        """Log a field that was left out, once per register and value.
 
-        A station can sit in such a state for a while (a Charger 2 reads
-        0x001E at 15600 for about a minute after a hard disconnect), and a
-        warning on every poll says nothing new after the first one. The first
-        skip of a value warns; the same value again is DEBUG and counted; a
-        different value warns again and says how many were held back. Once the
-        field parses again it starts over, so a later recurrence warns again.
+        A station that is waking up reads a control word that is not in the
+        table for a cycle or two, and the field is back on the next poll, so the
+        first skips go to debug and only a streak that lasts
+        PERSISTENT_SKIP_POLLS polls in a row warns. A station that sits in such
+        a state would otherwise repeat the same warning on every poll, which
+        says nothing new after the first one. Once the field parses again the
+        count starts over, so a later recurrence has to build a streak again.
         """
-        reason = str(err)
-        last, held = self._skipped_fields.get(key, ("", 0))
-
-        if reason == last:
-            self._skipped_fields[key] = (reason, held + 1)
-            _LOGGER.debug("Skipping %s again: %s", key, reason)
+        if field.address in self._skipped_block:
             return
+        self._skipped_block.add(field.address)
 
-        self._skipped_fields[key] = (reason, 0)
-        extra = f" [{held} more skipped reads of the previous value]" if held else ""
-        _LOGGER.warning("Skipping %s: %s%s", key, reason, extra)
+        reason = str(err)
+        last, streak = self._skipped_fields.get(key, ("", 0))
+        count = streak + 1 if reason == last else 1
+        self._skipped_fields[key] = (reason, count)
+
+        if count < PERSISTENT_SKIP_POLLS:
+            level = logging.DEBUG
+            note = "it usually clears by itself"
+        elif count == PERSISTENT_SKIP_POLLS:
+            level = logging.WARNING
+            note = "the value stays unavailable until the station reports another"
+        else:
+            # One warning per streak: a station that sits in this state for an
+            # hour would otherwise repeat it on every poll.
+            level = logging.DEBUG
+            note = "already reported once"
+
+        _LOGGER.log(
+            level,
+            "Skipping %s: %s (%d poll(s) in a row; %s)",
+            key,
+            reason,
+            count,
+            note,
+        )
 
     def _clear_skipped_field(self, key: str) -> None:
         """Note that a field that was being skipped parses again."""
         last = self._skipped_fields.pop(key, None)
         if last is not None:
             _LOGGER.debug(
-                "%s parses again after %d skipped read(s)", key, last[1] + 1
+                "%s parses again after %d skipped read(s)", key, last[1]
             )
 
     def build_write_command(self, name: str, value: Any) -> WriteableRegister | None:

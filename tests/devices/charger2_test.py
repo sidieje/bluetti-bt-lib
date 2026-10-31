@@ -5,9 +5,12 @@ from decimal import Decimal
 from bluetti_bt_lib.base_devices.bluetti_device import PERSISTENT_SKIP_POLLS
 from bluetti_bt_lib.devices.charger2 import (
     CHARGER2,
+    Charger2ReverseChargingField,
+    Charger2ReverseChargingModeField,
     Charger2SilentChargingField,
     Charger2SystemSwitchField,
 )
+from bluetti_bt_lib.enums import ReverseChargingMode
 from bluetti_bt_lib.fields import FieldName, SignedDecimalField
 
 
@@ -187,6 +190,105 @@ class TestCharger2(unittest.TestCase):
         sensors = [field.name for field in self.device.get_sensor_fields()]
         self.assertIn(name, sensors)
         self.assertIsNone(self.device.build_write_command(name, 120))
+
+    def test_top_up_power_reads_the_whole_word(self):
+        # The app allows 100-800 W, so the value passes 255 and the high byte is
+        # in use: 800 W reads 0x0320, not 0x0020.
+        name = FieldName.REVERSE_CHARGING_TOP_UP_POWER.value
+        parsed = self.device.parse(15631, bytes.fromhex("0320"))
+        self.assertEqual(parsed[name], 800)
+
+    def test_reverse_charging_states_seen_on_a_device(self):
+        # Five dumps from a Charger 2 on 26 Oct 2026, taken while the Bluetti
+        # app changed the mode. Pulse with the switch off has never been dumped.
+        expected = {
+            "0169": (True, ReverseChargingMode.TRICKLE),
+            "0269": (True, ReverseChargingMode.PULSE),
+            "0469": (True, ReverseChargingMode.TOP_UP),
+            "016A": (False, ReverseChargingMode.TRICKLE),
+            "046A": (False, ReverseChargingMode.TOP_UP),
+        }
+
+        for hex_value, (on, mode) in expected.items():
+            with self.subTest(register_value=hex_value):
+                parsed = self.device.parse(15626, bytes.fromhex(hex_value))
+                self.assertEqual(
+                    parsed[FieldName.CTRL_REVERSE_CHARGING.value], on
+                )
+                self.assertEqual(
+                    parsed[FieldName.CTRL_REVERSE_CHARGING_MODE.value], mode
+                )
+
+    def test_unknown_reverse_charging_word_skips_only_those_fields(self):
+        # 0x0368 has two mode bits set and no switch state, which is not a
+        # layout the app has ever produced. The rest of the cycle stays.
+        with self.assertLogs(
+            "bluetti_bt_lib.base_devices.bluetti_device", "DEBUG"
+        ) as logs:
+            parsed = self.device.parse(15626, bytes.fromhex("0368"))
+
+        self.assertEqual(parsed, {})
+        skips = [r for r in logs.records if "Skipping" in r.getMessage()]
+        self.assertEqual(len(skips), 1)
+        self.assertIn("0x0368", skips[0].getMessage())
+
+    def test_late_answer_from_15600_is_not_read_as_on(self):
+        # 0x5529 ends in 0b01, which is the "on" pair, but 0x55 is not a mode.
+        # A shifted answer from register 15600 has landed on 15626 before, so
+        # the high byte has to agree before the switch bits mean anything.
+        for hex_value in ("5529", "AA2A", "0001"):
+            with self.subTest(register_value=hex_value):
+                with self.assertLogs(
+                    "bluetti_bt_lib.base_devices.bluetti_device", "DEBUG"
+                ):
+                    parsed = self.device.parse(15626, bytes.fromhex(hex_value))
+                self.assertEqual(parsed, {})
+
+    def test_reverse_charging_is_reported_but_not_writeable(self):
+        # Reading 15626 is safe; writing it pushes current into a car's starter
+        # battery, so it stays out of reach until the write side is proven.
+        switches = [f.name for f in self.device.get_switch_fields()]
+        selects = [f.name for f in self.device.get_select_fields()]
+        bools = [f.name for f in self.device.get_bool_fields()]
+        sensors = [f.name for f in self.device.get_sensor_fields()]
+
+        self.assertIn(FieldName.CTRL_REVERSE_CHARGING.value, bools)
+        self.assertIn(FieldName.CTRL_REVERSE_CHARGING_MODE.value, sensors)
+        self.assertNotIn(FieldName.CTRL_REVERSE_CHARGING.value, switches)
+        self.assertNotIn(FieldName.CTRL_REVERSE_CHARGING_MODE.value, selects)
+
+        for field_name, value in (
+            (FieldName.CTRL_REVERSE_CHARGING.value, True),
+            (FieldName.CTRL_REVERSE_CHARGING_MODE.value, "PULSE"),
+        ):
+            with self.subTest(field=field_name):
+                self.assertIsNone(self.device.build_write_command(field_name, value))
+
+    def test_reverse_charging_compose_keeps_the_rest_of_the_word(self):
+        # Groundwork for the write side: each field changes only its own half of
+        # 15626 and refuses a word it does not recognise, so a write can never
+        # zero the mode byte or the switch along with it.
+        switch = Charger2ReverseChargingField(
+            FieldName.CTRL_REVERSE_CHARGING, 15626
+        )
+        mode = Charger2ReverseChargingModeField(
+            FieldName.CTRL_REVERSE_CHARGING_MODE, 15626
+        )
+
+        self.assertEqual(switch.compose(0x046A, True), 0x0469)
+        self.assertEqual(switch.compose(0x0469, False), 0x046A)
+        self.assertEqual(mode.compose(0x046A, "PULSE"), 0x026A)
+        self.assertEqual(mode.compose(0x0169, ReverseChargingMode.TOP_UP), 0x0469)
+        # The pulse/off word the app has never been dumped producing.
+        self.assertEqual(mode.compose(0x016A, "PULSE"), 0x026A)
+        self.assertEqual(switch.compose(0x026A, True), 0x0269)
+
+        self.assertIsNone(switch.compose(0x0468, True))
+        self.assertIsNone(switch.compose(0x046A, 1))
+        self.assertIsNone(mode.compose(0x046A, "TURBO"))
+        self.assertIsNone(switch.compose(0x5529, True))
+        self.assertIsNone(mode.compose(0x5529, "PULSE"))
+
     def test_starter_battery_values_are_signed(self):
         # Raw dumps from a Charger 2: 0x1760/0x030A while the alternator
         # charges through it, 0xFCE0/0xFF9C while reverse charging feeds the

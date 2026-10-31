@@ -49,6 +49,8 @@ class FieldName(Enum):
     CTRL_LED_MODE = "ctrl_led_mode"
     CTRL_POWER_LIFTING = "ctrl_power_lifting"
     CTRL_POWER_OFF = "ctrl_power_off"
+    CTRL_REVERSE_CHARGING = "ctrl_reverse_charging"
+    CTRL_REVERSE_CHARGING_MODE = "ctrl_reverse_charging_mode"
     CTRL_SPLIT_PHASE = "ctrl_split_phase"
     CTRL_SPLIT_PHASE_MODE = "ctrl_split_phase_mode"
     CTRL_SILENT_CHARGING = "ctrl_silent_charging"

@@ -2,6 +2,7 @@ import unittest
 
 from decimal import Decimal
 
+from bluetti_bt_lib.base_devices.bluetti_device import PERSISTENT_SKIP_POLLS
 from bluetti_bt_lib.devices.charger2 import (
     CHARGER2,
     Charger2SilentChargingField,
@@ -21,6 +22,9 @@ class TestCharger2(unittest.TestCase):
             15600,
         )
         self.device = CHARGER2()
+
+    def joined(self, logs) -> str:
+        return "\n".join(r.getMessage() for r in logs.records)
 
     def test_all_four_register_states(self):
         expected = {
@@ -51,51 +55,89 @@ class TestCharger2(unittest.TestCase):
     def test_unknown_control_word_skips_only_the_controls(self):
         # A station that reads 0x001E at 15600 for a minute after a hard
         # disconnect must not lose the whole cycle, only the two controls.
-        with self.assertLogs("bluetti_bt_lib.base_devices.bluetti_device", "WARNING") as logs:
+        with self.assertLogs(
+            "bluetti_bt_lib.base_devices.bluetti_device", "DEBUG"
+        ) as logs:
             parsed = self.device.parse(15600, bytes.fromhex("001E"))
-        self.assertEqual(parsed, {})
-        self.assertEqual(len(logs.records), 2)
-        self.assertIn("0x001E", logs.output[0])
 
-    def test_the_same_unknown_value_warns_once(self):
-        # Polled every 20 s, a station that sits on 0x001E for a minute would
-        # repeat the same two warnings on every poll. The first poll warns,
-        # the ones after it are DEBUG.
+        self.assertEqual(parsed, {})
+        skips = [r for r in logs.records if "Skipping" in r.getMessage()]
+        self.assertEqual(len(skips), 1)
+        self.assertIn("0x001E", skips[0].getMessage())
+
+    def test_two_fields_on_one_register_report_once(self):
+        # ctrl_system_on_off and ctrl_silent_charging are the same register, so
+        # one bad word there is one fault. It used to cost two warnings.
+        with self.assertLogs(
+            "bluetti_bt_lib.base_devices.bluetti_device", "DEBUG"
+        ) as logs:
+            self.device.parse(15600, bytes.fromhex("0089"))
+
+        skips = [r for r in logs.records if "Skipping" in r.getMessage()]
+        self.assertEqual(len(skips), 1)
+
+    def test_a_brief_unknown_value_stays_quiet(self):
+        # A Charger 2 that wakes with solar input reads 0x0089 for a cycle or
+        # two. That is worth a debug line, not a warning in the HA log.
         logger = "bluetti_bt_lib.base_devices.bluetti_device"
         with self.assertLogs(logger, "DEBUG") as logs:
-            for _ in range(3):
-                self.assertEqual(self.device.parse(15600, bytes.fromhex("001E")), {})
+            for _ in range(PERSISTENT_SKIP_POLLS - 1):
+                self.assertEqual(
+                    self.device.parse(15600, bytes.fromhex("0089")), {}
+                )
+
+        self.assertEqual(
+            [r.levelname for r in logs.records if "Skipping" in r.getMessage()],
+            ["DEBUG"] * (PERSISTENT_SKIP_POLLS - 1),
+        )
+
+    def test_an_unknown_value_that_persists_warns_once(self):
+        # Polled every 20 s, a station that sits on 0x001E keeps saying the same
+        # thing. The streak is what warns, and it warns once.
+        logger = "bluetti_bt_lib.base_devices.bluetti_device"
+        with self.assertLogs(logger, "DEBUG") as logs:
+            for _ in range(PERSISTENT_SKIP_POLLS + 1):
+                self.assertEqual(
+                    self.device.parse(15600, bytes.fromhex("001E")), {}
+                )
 
         skips = [r for r in logs.records if "Skipping" in r.getMessage()]
         self.assertEqual(
-            [r.levelname for r in skips], ["WARNING"] * 2 + ["DEBUG"] * 4
+            [r.levelname for r in skips],
+            ["DEBUG"] * (PERSISTENT_SKIP_POLLS - 1) + ["WARNING", "DEBUG"],
         )
+        warning = next(r for r in skips if r.levelname == "WARNING")
+        self.assertIn(f"{PERSISTENT_SKIP_POLLS} poll(s) in a row", warning.getMessage())
 
-    def test_a_different_unknown_value_warns_again(self):
+    def test_a_different_unknown_value_starts_the_streak_over(self):
         logger = "bluetti_bt_lib.base_devices.bluetti_device"
         with self.assertLogs(logger, "DEBUG") as logs:
-            self.device.parse(15600, bytes.fromhex("001E"))
-            self.device.parse(15600, bytes.fromhex("001E"))
+            for _ in range(PERSISTENT_SKIP_POLLS - 1):
+                self.device.parse(15600, bytes.fromhex("001E"))
             self.device.parse(15600, bytes.fromhex("001F"))
 
-        warnings = [r.getMessage() for r in logs.records if r.levelname == "WARNING"]
-        self.assertEqual(len(warnings), 4)
-        self.assertIn("0x001F", warnings[2])
-        self.assertIn("1 more skipped reads of the previous value", warnings[2])
+        skips = [r for r in logs.records if "Skipping" in r.getMessage()]
+        self.assertEqual([r.levelname for r in skips], ["DEBUG"] * len(skips))
+        self.assertIn("1 poll", skips[-1].getMessage())
+        self.assertIn("0x001F", skips[-1].getMessage())
 
-    def test_an_unknown_value_warns_again_after_a_known_one(self):
+    def test_the_streak_restarts_after_a_known_value(self):
         # Once the field parses again it starts over: the same fault later on
-        # is news again.
+        # has to build a streak again before it speaks up.
         logger = "bluetti_bt_lib.base_devices.bluetti_device"
         with self.assertLogs(logger, "DEBUG") as logs:
-            self.device.parse(15600, bytes.fromhex("001E"))
+            for _ in range(PERSISTENT_SKIP_POLLS):
+                self.device.parse(15600, bytes.fromhex("001E"))
             parsed = self.device.parse(15600, bytes.fromhex("5529"))
-            self.device.parse(15600, bytes.fromhex("001E"))
+            for _ in range(PERSISTENT_SKIP_POLLS - 1):
+                self.device.parse(15600, bytes.fromhex("001E"))
 
         self.assertEqual(parsed[FieldName.CTRL_SYSTEM_ON_OFF.value], True)
-        warnings = [r for r in logs.records if r.levelname == "WARNING"]
-        self.assertEqual(len(warnings), 4)
-        self.assertIn("parses again", logs.output[2])
+        self.assertEqual(
+            [r.levelname for r in logs.records if r.levelname == "WARNING"],
+            ["WARNING"],
+        )
+        self.assertIn("parses again", self.joined(logs))
 
     def test_known_control_word_still_parses_both_controls(self):
         parsed = self.device.parse(15600, bytes.fromhex("5529"))

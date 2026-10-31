@@ -12,6 +12,7 @@ from bleak_retry_connector import BleakClientWithServiceCache, establish_connect
 from cryptography.exceptions import InvalidSignature
 
 from .encryption import BluettiEncryption, Message, MessageType, AES_BLOCK_SIZE
+from .bleak_errors import describe_bleak_error
 from ..base_devices import BluettiDevice, STARTUP_FIELDS, PACK_COUNT_FIELDS
 from ..const import NOTIFY_UUID, WRITE_UUID
 from ..fields import FieldName
@@ -361,7 +362,7 @@ class DeviceReader:
             return True
 
         except BleakError as err:
-            self.logger.warning("Bleak error during connect: %s", err)
+            self._log_link_fault("connect", err)
             await self._cleanup_failed_connect()
             return False
         except asyncio.CancelledError:
@@ -913,7 +914,7 @@ class DeviceReader:
                 await self._resync_link()
                 return None
             except BleakError as err:
-                self.logger.warning("Bleak error: %s", err)
+                self._log_link_fault("read", err)
                 # Connection may be lost: drop all per-connection state so
                 # the next read() reconnects with a fresh client, notifier
                 # and encryption handshake.
@@ -996,7 +997,7 @@ class DeviceReader:
             await self._resync_link()
             return None
         except BleakError as err:
-            self.logger.warning("Bleak error reading selected registers: %s", err)
+            self._log_link_fault("read of selected fields", err)
             # Same recovery path as read(): the next read/read_locked()
             # reconnects from scratch.
             await self._mark_disconnected()
@@ -1010,6 +1011,47 @@ class DeviceReader:
             return None
 
         return parsed_data or None
+
+    def _report_fault(self, kind: str) -> tuple[int, str]:
+        """Decide how loudly to report a link fault of this kind.
+
+        A fault that repeats is a property of that station rather than news, so
+        the first of a kind warns and the rest are held back for
+        ABORT_REPORT_WINDOW_SECONDS, counted, and mentioned by the next warning.
+        Returns the level to log at and any tally to append.
+        """
+        now = time.monotonic()
+        if (
+            kind == self._fault
+            and now - self._fault_reported_at < ABORT_REPORT_WINDOW_SECONDS
+        ):
+            self._fault_suppressed += 1
+            return logging.DEBUG, ""
+
+        held = self._fault_suppressed
+        self._fault, self._fault_reported_at = kind, now
+        self._fault_suppressed = 0
+        extra = f" [{held} more the same way since the last warning]" if held else ""
+        return logging.WARNING, extra
+
+    def _log_link_fault(self, what: str, err: BaseException) -> None:
+        """Report a Bleak failure on the link, once per kind of failure.
+
+        One dropped connection used to produce a warning every poll for as long
+        as the station stayed down, each one quoting Bleak's own rendering of
+        the exception. The link is being torn down and rebuilt either way, so
+        the line says what the station did and that the next poll will try
+        again, and repeats of the same thing go quiet for a while.
+        """
+        note = describe_bleak_error(err)
+        level, extra = self._report_fault(f"bleak {what}: {note}")
+        self.logger.log(
+            level,
+            "BLE %s failed: %s; the link will be rebuilt on the next poll%s",
+            what,
+            note,
+            extra,
+        )
 
     def _log_abort(self, err: ResponseTimeout) -> None:
         """Report a read cycle that was cut short, once per fault.
@@ -1025,34 +1067,19 @@ class DeviceReader:
         waking misses its first request, which is normal.
         """
         kind = self.link_stats.failure or "unknown"
-        now = time.monotonic()
-
-        level = logging.WARNING
-        held = 0
-        if not self._answered:
+        if self._answered:
+            level, extra = self._report_fault(kind)
+        else:
             # A station that is still waking misses its first request, which is
             # normal and not worth alarming anyone about.
-            level = logging.DEBUG
-        elif (
-            kind == self._fault
-            and now - self._fault_reported_at < ABORT_REPORT_WINDOW_SECONDS
-        ):
-            self._fault_suppressed += 1
-            level = logging.DEBUG
-        else:
-            held = self._fault_suppressed
-            self._fault, self._fault_reported_at = kind, now
-            self._fault_suppressed = 0
-
-        extra = ""
-        if held:
-            extra = f" [{held} more the same way since the last warning]"
+            level, extra = logging.DEBUG, ""
 
         detail = f": {err.detail}" if err.detail else ""
         self.logger.log(
             level,
             "Read aborted: no valid response to %s within %ss"
-            " (client connected: %s)%s%s%s",
+            " (client connected: %s)%s; the rest of this poll was skipped,"
+            " and the values stay as they were until the next poll%s%s",
             err.registers,
             RESPONSE_TIMEOUT_SECONDS,
             self.client.is_connected if self.client else False,
@@ -1107,16 +1134,34 @@ class DeviceReader:
             # go quiet usually answers late first.
             self.logger.debug("Slow answer to %s: %.1fs", registers, elapsed)
 
-    def _rx_sample(self) -> str:
-        """The start of whatever arrived about the request in flight, hex.
+    def _rx_buffer(self) -> bytes:
+        """Whatever arrived about the request in flight, whole.
 
         A frame that was recognised as an answer to something else is thrown
         away as soon as it is spotted, so fall back to the copy kept for it.
         """
-        pending = bytes(self.notify_response[:RX_SAMPLE_BYTES])
+        pending = bytes(self.notify_response)
         if pending:
-            return pending.hex()
-        return bytes(self._rx_unexpected[:RX_SAMPLE_BYTES]).hex()
+            return pending
+        return bytes(self._rx_unexpected)
+
+    def _rx_sample(self) -> str:
+        """The start of whatever arrived about the request in flight, hex."""
+        return self._rx_buffer()[:RX_SAMPLE_BYTES].hex()
+
+    def _shifted_start(self, registers: DeviceRegister, buffer: bytes) -> int:
+        """How many stray bytes sit in front of an unfinished answer.
+
+        Returns 0 when the buffer is not a shifted answer that could still be
+        completed. This is the in-progress form of the shift loop in
+        _notification_handler(): that one needs a whole frame to check the CRC,
+        this one only needs the header, so a frame whose tail is still on the way
+        can be recognised before it is thrown away.
+        """
+        for junk in range(1, STRAY_BYTES_TOLERATED + 1):
+            if registers.is_partial_response(buffer[junk:]):
+                return junk
+        return 0
 
     def _rx_state(self, registers: DeviceRegister) -> tuple[str, str]:
         """Sort out what the station sent about a request it did not answer.
@@ -1139,6 +1184,15 @@ class DeviceReader:
                 "partial",
                 f"the station sent {self._rx_bytes} of {expected} bytes in "
                 f"{self._rx_frames} frame(s) then stopped ({sample})",
+            )
+
+        junk = self._shifted_start(registers, self._rx_buffer())
+        if junk:
+            return (
+                "misaligned",
+                f"the station's answer to this request arrived {junk} byte(s) "
+                f"out of place and stopped after {self._rx_bytes - junk} of "
+                f"{expected} bytes ({sample})",
             )
 
         return (
@@ -1643,6 +1697,25 @@ class DeviceReader:
         # carries no register address, so length plus byte count is the only
         # thing to go on. Discard it and keep waiting; if no valid answer
         # follows, the request times out and the read is aborted.
+        #
+        # One shape is worth keeping instead: a shifted answer whose tail is
+        # still on the way. The stray byte pushes the answer along, so the buffer
+        # reaches the expected length one byte (or more) before the answer is
+        # complete, and the shift loop above cannot use it yet. Keeping it lets
+        # the next notification finish a frame that the loop would then recover;
+        # discarding here loses a whole cycle of data over a byte in flight,
+        # which is what the 30 Oct AC300 log shows.
+        junk = self._shifted_start(registers, response)
+        if junk:
+            self.logger.debug(
+                "Keeping %d byte(s): %d stray byte(s) in front of an"
+                " unfinished answer to %s",
+                len(response),
+                junk,
+                registers,
+            )
+            return
+
         self.logger.debug(
             "Discarding response that does not match %s: %s",
             registers,

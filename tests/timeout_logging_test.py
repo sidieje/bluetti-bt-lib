@@ -5,6 +5,8 @@ import unittest
 from contextlib import contextmanager
 from unittest.mock import patch
 
+from bleak.exc import BleakGATTProtocolError
+
 from bluetti_bt_lib import DeviceReader
 from bluetti_bt_lib.base_devices import BaseDeviceV1
 from bluetti_bt_lib.bluetooth import device_reader
@@ -119,6 +121,66 @@ class StrayByteMock(ClientMockNoEncryption):
         # on a station: the reader only sees the two together in its buffer.
         await self._callback(char_specifier, bytearray(self.junk))
         await super().write_gatt_char(char_specifier, data, response)
+
+
+class SplitStrayMock(StrayByteMock):
+    """Junk in front of an answer whose last notification lands after the buffer
+    is already as long as the answer.
+
+    This is the AC300 frame from the 30 Oct log: 21 bytes for a 21-byte answer,
+    head ``41 01 03 10``. The stray byte pushes the answer along, so the buffer
+    reaches the expected length one byte before the answer is complete, and the
+    reader used to throw the whole thing away at that moment.
+    """
+
+    #: whether the last byte of the answer is sent at all
+    send_tail = True
+
+    async def write_gatt_char(self, char_specifier, data, response=None) -> None:
+        self.requests += 1
+        if self.requests not in self.at or self._callback is None:
+            # Skip StrayByteMock, which would count this request a second time.
+            await ClientMockNoEncryption.write_gatt_char(
+                self, char_specifier, data, response
+            )
+            return
+
+        request = bytes(data)
+        address, quantity = struct.unpack_from("!HH", request, 2)
+        frame = self._read_frame(request[0], self._get_register(address, quantity))
+
+        # Cut so that the junk plus the first chunk is exactly one answer long.
+        cut = len(frame) - len(self.junk)
+        await self._callback(char_specifier, bytearray(self.junk))
+        await self._callback(char_specifier, frame[:cut])
+        if self.send_tail:
+            await self._callback(char_specifier, frame[cut:])
+
+
+class StuckShiftMock(SplitStrayMock):
+    """A shifted answer whose tail never arrives.
+
+    The reader should keep the bytes it has rather than throw them away, and if
+    the tail really is lost, say so in terms of a frame that arrived out of
+    place instead of a frame that is not an answer at all.
+    """
+
+    send_tail = False
+
+
+class RefusingMock(ClientMockNoEncryption):
+    """Fails every write with a GATT protocol error.
+
+    This is what a station that refuses a request looks like to the reader, and
+    Bleak's own rendering of it is the (code, message) tuple it was built from.
+    """
+
+    def __init__(self, code: int = 0x0E) -> None:
+        super().__init__()
+        self.code = code
+
+    async def write_gatt_char(self, char_specifier, data, response=None) -> None:
+        raise BleakGATTProtocolError(self.code)
 
 
 class TestTimeoutLogging(unittest.IsolatedAsyncioTestCase):
@@ -361,6 +423,70 @@ class TestTimeoutLogging(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(reader.link_stats.failure, "mismatch")
         self.assertEqual(reader.link_stats.shifted, 0)
         self.assertIn("Discarding response that does not match", self.joined(logs))
+
+    async def test_an_answer_split_across_notifications_after_junk_is_recovered(self):
+        # The 30 Oct AC300 log: "the station sent 21 bytes that are not an answer
+        # to this request (410103100017000000000000)" for a 21-byte answer. The
+        # 0x41 is the stray byte, so the answer behind it was one byte short of
+        # landing when the buffer hit the expected length - and the reader threw
+        # away a frame that was about to become valid.
+        reader = self.make_reader(SplitStrayMock({2}))
+
+        with self.fast_timing():
+            with self.assertLogs(reader.logger, level="DEBUG") as logs:
+                data = await reader.read()
+
+        self.assertIsNotNone(data)
+        self.assertEqual(reader.link_stats.shifted, 1)
+        self.assertEqual(reader.link_stats.retried, 0)
+        self.assertEqual(self.aborted(logs), [])
+        self.assertNotIn("Discarding response that does not match", self.joined(logs))
+
+    async def test_a_shifted_answer_that_never_finishes_says_so(self):
+        # Keeping the bytes is only half the job: if the tail really is lost, the
+        # abort has to say the answer arrived out of place, which is a different
+        # fault from a frame that answers nothing.
+        reader = self.make_reader(StuckShiftMock({2, 3}))
+
+        with self.fast_timing():
+            with self.assertLogs(reader.logger, level="DEBUG") as logs:
+                await reader.read()
+
+        self.assertEqual(reader.link_stats.failure, "misaligned")
+        self.assertIn("out of place", self.joined(logs))
+        self.assertNotIn("are not an answer to this request", self.joined(logs))
+
+    async def test_a_refused_request_is_said_plainly_once(self):
+        # The 30 Oct AC300 log repeated "Bleak error: (<BleakGATTProtocolError
+        # Code.UNLIKELY_ERROR: 14>, 'GATT Protocol Error: Unlikely Error')"
+        # every poll for one fault: unreadable, alarming, and not news after
+        # the first time.
+        reader = self.make_reader(RefusingMock())
+
+        with self.fast_timing():
+            with self.assertLogs(reader.logger, level="DEBUG") as logs:
+                first = await reader.read()
+                second = await reader.read()
+                with patch.object(device_reader, "ABORT_REPORT_WINDOW_SECONDS", 0.0):
+                    third = await reader.read()
+
+        self.assertIsNone(first)
+        self.assertIsNone(second)
+        self.assertIsNone(third)
+        lines = [r for r in logs.records if "BLE read failed" in r.getMessage()]
+        self.assertEqual(
+            [r.levelname for r in lines], ["WARNING", "DEBUG", "WARNING"]
+        )
+        message = lines[0].getMessage()
+        self.assertIn("GATT protocol error 14", message)
+        self.assertIn("gave no reason", message)
+        self.assertIn("link will be rebuilt", message)
+        self.assertNotIn("BleakGATTProtocolErrorCode", message)
+        self.assertNotIn("since the last warning", message)
+        self.assertNotIn("since the last warning", lines[1].getMessage())
+        self.assertIn(
+            "1 more the same way since the last warning", lines[2].getMessage()
+        )
 
     async def test_a_slow_answer_is_noticed(self):
         # A station that is about to stop answering usually answers late first,

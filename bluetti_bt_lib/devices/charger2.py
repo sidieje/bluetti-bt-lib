@@ -38,7 +38,8 @@ class Charger2ControlField(SwitchField):
             state = CHARGER2_CONTROL_STATES[value]
         except KeyError:
             raise ValueError(
-                f"Unexpected Charger 2 control value: 0x{value:04X}"
+                f"Charger 2 reads 0x{value:04X} at register {self.address},"
+                " which is not a control word this integration knows"
             ) from None
 
         return state[self.state_index]

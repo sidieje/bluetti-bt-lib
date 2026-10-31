@@ -17,6 +17,19 @@ class ReadableRegisters(DeviceRegister):
         # 2 byte crc
         return 2 * self.quantity + 5
 
+    def is_partial_response(self, response: bytes) -> bool:
+        """The start of an answer to this request, before body and CRC land.
+
+        The byte count is what says this answer covers the quantity that was
+        asked for, which is as much as a function 03 answer can be identified
+        from before it is complete.
+        """
+        return (
+            len(response) >= 3
+            and response[2] == 2 * self.quantity
+            and super().is_partial_response(response)
+        )
+
     def is_valid_response(self, response: bytes) -> bool:
         """A complete, uncorrupted answer to exactly this request: length, slave address,
         function code, byte count and CRC. A function 03 answer does not say which registers

@@ -195,7 +195,7 @@ bluetti-read -m 00:00:00:00:00:00 -t EB3A
 Example output:
 ```bash
 FieldName.DEVICE_TYPE: EB3A
-FieldName.DEVICE_SN: 0000000000000
+FieldName.DEVICE_SN: 2300000000000
 FieldName.BATTERY_SOC: 92%
 FieldName.DC_INPUT_POWER: 0W
 FieldName.AC_INPUT_POWER: 0W

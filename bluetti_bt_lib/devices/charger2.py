@@ -78,6 +78,10 @@ class Charger2SilentChargingField(Charger2ControlField):
 # 0x0469 top-up on, 0x016A trickle selected but off, 0x046A top-up selected but
 # off. Pulse with the switch off has never been dumped, so this rule predicts
 # 0x026A for it. Two mode bits have never been seen set together.
+#
+# A live read through this library on 31 Oct 2026 answered 15626 cleanly on a
+# station that was idle: top-up selected with the switch off, which is the
+# layout above, and the mode byte survived the switch being off.
 REVERSE_CHARGING_ON = 0b01
 REVERSE_CHARGING_OFF = 0b10
 
@@ -245,7 +249,8 @@ class CHARGER2(BaseDeviceV2):
                 # 100 to 150 W changed 15631 from 0x0064 to 0x0096, so the word
                 # is the watt count itself, big-endian, with no scaling. The app
                 # allows 100-800 W (0x0064 to 0x0320), which is why the whole
-                # 16 bit word is read: above 255 W the high byte is in use. Read
+                # 16 bit word is read: above 255 W the high byte is in use.
+                # Settings seen on real units so far: 100, 150 and 200 W. Read
                 # only until the step the app accepts has been recorded.
                 UIntField(FieldName.REVERSE_CHARGING_TOP_UP_POWER, 15631),
 

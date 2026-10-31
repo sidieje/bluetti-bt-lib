@@ -193,10 +193,13 @@ class TestCharger2(unittest.TestCase):
 
     def test_top_up_power_reads_the_whole_word(self):
         # The app allows 100-800 W, so the value passes 255 and the high byte is
-        # in use: 800 W reads 0x0320, not 0x0020.
+        # in use: 800 W reads 0x0320, not 0x0020. 300 W is a setting an owner
+        # made in the app and read back through this library.
         name = FieldName.REVERSE_CHARGING_TOP_UP_POWER.value
         parsed = self.device.parse(15631, bytes.fromhex("0320"))
         self.assertEqual(parsed[name], 800)
+        parsed = self.device.parse(15631, bytes.fromhex("012C"))
+        self.assertEqual(parsed[name], 300)
 
     def test_reverse_charging_states_seen_on_a_device(self):
         # Five dumps from a Charger 2 on 26 Oct 2026, taken while the Bluetti

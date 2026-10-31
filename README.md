@@ -129,11 +129,11 @@ top-up power limit in watts. The app shows the same three as *Reverse
 charging*, *Mode* and *Power*, and a unit whose settings have never been
 touched reports them as disabled, top-up and 200 W. Turning reverse charging
 on pushes current into a car's starter battery, and the app already offers the
-controls, so the write side waits until an owner records the ranges the app
-accepts: the app allows 100-800 W for top-up power but the step it accepts is
-unknown, and the pulse mode with reverse charging off has never been read from
-a station. They are named `ctrl_*` regardless, so the entity names do not
-change when the write side lands.
+controls, so the write side waits. The app offers 100-800 W for top-up power
+in 1 W steps, but warns "High power may damage the battery" above 300 W; the
+pulse mode with reverse charging off has never been read from a station
+either. They are named `ctrl_*` regardless, so the entity names do not change
+when the write side lands.
 
 ## Installation
 

@@ -252,11 +252,18 @@ class CHARGER2(BaseDeviceV2):
                 # 100 to 150 W changed 15631 from 0x0064 to 0x0096, so the word
                 # is the watt count itself, big-endian, with no scaling. The app
                 # allows 100-800 W (0x0064 to 0x0320), which is why the whole
-                # 16 bit word is read: above 255 W the high byte is in use.
-                # Settings seen on real units so far: 100, 150 and 200 W, of
-                # which 200 W is the default on a unit whose setting has never
-                # been changed. Read only until the step the app accepts has
-                # been recorded.
+                # 16 bit word is read: 300 W reads back as 0x012C, so above
+                # 255 W the high byte is in use. Settings seen on real units so
+                # far: 100, 150, 200 (the default on a unit whose setting has
+                # never been changed) and 300 W. The app accepts 300 W quietly
+                # but entering 301 W brings up "High power may damage the
+                # battery, Continue?", so 300 W is the ceiling Bluetti offers
+                # without a confirmation, well under the 800 W slider maximum.
+                # The step is 1 W: 299 W is accepted alongside 300 W. Still
+                # read only, because no write has been tried on a device and it
+                # is not known whether the firmware refuses anything the app
+                # only warns about; a write range should start from that 300 W
+                # ceiling rather than the slider's 800 W.
                 UIntField(FieldName.REVERSE_CHARGING_TOP_UP_POWER, 15631),
 
                 SwapStringField(FieldName.DEVICE_TYPE, 15500, 6),

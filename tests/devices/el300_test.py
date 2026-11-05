@@ -11,6 +11,11 @@ from bluetti_bt_lib.utils.device_builder import build_device
 # rather than field types, so a register can be writable on one model without
 # breaking the others.
 UNIFIED_LAYOUT_DEVICES = (EL100V2, EL200V2, EL300)
+# The standby switch is the Elite 200 V2's own addition: an owner of that model
+# traced the official integration's sleep switch to register 2013, and the Apex
+# 300 is the unit the state word was measured on. The other portables have never
+# been asked, so they keep the unified map without the control.
+EL200V2_ONLY_DIFFERENCE = ("ctrl_sleep_mode", 174, 1)
 # The EL30 V2 shares that map except for the working mode. Register 2005 is
 # verified on the other portables, but an EL30 V2 owner saw it read 4 (time
 # control) while the app showed Standard, so that profile leaves it out
@@ -31,7 +36,12 @@ class TestEL300(unittest.TestCase):
         reference = _layout(EL100V2)
         for device_cls in UNIFIED_LAYOUT_DEVICES:
             with self.subTest(device=device_cls.__name__):
-                self.assertEqual(_layout(device_cls), reference)
+                layout = _layout(device_cls)
+                if device_cls is EL200V2:
+                    # Drop the recorded standby switch; everything else in the
+                    # map stays unified, in the same order.
+                    layout = [f for f in layout if f != EL200V2_ONLY_DIFFERENCE]
+                self.assertEqual(layout, reference)
 
     def test_el30v2_differs_only_by_the_working_mode(self):
         reference = set(_layout(EL100V2))

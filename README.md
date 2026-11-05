@@ -80,30 +80,36 @@ row and credit the owner.
 - EL300 — [@suiciety](https://github.com/suiciety)
 - Handsfree 2 — [@pablogiaccaglia](https://github.com/pablogiaccaglia)
 
-|Device Name|ctrl_ac|ctrl_dc|ctrl_ups_mode|soc_range_start|soc_range_end|ctrl_eco_min_power|
-|-----------|-------|-------|-------------|---------------|---------------|------------------|
-|AC200L     |✅     |✅     |✅           |✅             |✅             |❌                |
-|AC200M     |✅     |✅     |❌           |❌             |❌             |❌                |
-|AC200PL    |✅     |✅     |❌           |❌             |❌             |❌                |
-|AC300      |✅     |✅     |✅           |✅             |✅             |❌                |
-|AC500      |✅     |✅     |✅           |✅             |✅             |❌                |
-|AC50P      |✅     |✅     |❌           |❌             |❌             |❌                |
-|AP300      |✅     |✅     |✅           |✅             |✅             |✅                |
-|EB3A       |✅     |✅     |❌           |❌             |❌             |❌                |
-|EL10       |✅     |✅     |❌           |❌             |❌             |✅                |
-|EL100mini  |✅     |✅     |✅           |✅             |✅             |✅                |
-|EL100V2    |✅     |✅     |✅           |✅             |✅             |✅                |
-|Elite 200 V2|✅    |✅     |✅           |✅             |✅             |✅                |
-|EL30V2     |✅     |✅     |✅           |✅             |✅             |✅                |
-|EL300      |✅     |✅     |✅           |✅             |✅             |✅                |
-|EP500      |✅     |✅     |✅           |✅             |✅             |❌                |
-|EP500P     |✅     |✅     |✅           |✅             |✅             |❌                |
-|EP600      |✅     |❌     |❌           |✅             |✅             |❌                |
-|FP (FridgePower)|✅  |✅     |✅           |❌             |❌             |❌                |
-|Handsfree 1|✅     |✅     |❌           |❌             |❌             |❌                |
-|Handsfree 2|✅     |✅     |❌           |❌             |❌             |❌                |
+|Device Name|ctrl_ac|ctrl_dc|ctrl_ups_mode|soc_range_start|soc_range_end|ctrl_eco_min_power|ctrl_sleep_mode|
+|-----------|-------|-------|-------------|---------------|---------------|------------------|---------------|
+|AC200L     |✅     |✅     |✅           |✅             |✅             |❌                |❌             |
+|AC200M     |✅     |✅     |❌           |❌             |❌             |❌                |❌             |
+|AC200PL    |✅     |✅     |❌           |❌             |❌             |❌                |❌             |
+|AC300      |✅     |✅     |✅           |✅             |✅             |❌                |❌             |
+|AC500      |✅     |✅     |✅           |✅             |✅             |❌                |❌             |
+|AC50P      |✅     |✅     |❌           |❌             |❌             |❌                |❌             |
+|AP300      |✅     |✅     |✅           |✅             |✅             |✅                |✅             |
+|EB3A       |✅     |✅     |❌           |❌             |❌             |❌                |❌             |
+|EL10       |✅     |✅     |❌           |❌             |❌             |✅                |❌             |
+|EL100mini  |✅     |✅     |✅           |✅             |✅             |✅                |❌             |
+|EL100V2    |✅     |✅     |✅           |✅             |✅             |✅                |❌             |
+|Elite 200 V2|✅    |✅     |✅           |✅             |✅             |✅                |✅             |
+|EL30V2     |✅     |✅     |✅           |✅             |✅             |✅                |❌             |
+|EL300      |✅     |✅     |✅           |✅             |✅             |✅                |❌             |
+|EP500      |✅     |✅     |✅           |✅             |✅             |❌                |❌             |
+|EP500P     |✅     |✅     |✅           |✅             |✅             |❌                |❌             |
+|EP600      |✅     |❌     |❌           |✅             |✅             |❌                |❌             |
+|FP (FridgePower)|✅  |✅     |✅           |❌             |❌             |❌                |❌             |
+|Handsfree 1|✅     |✅     |❌           |❌             |❌             |❌                |❌             |
+|Handsfree 2|✅     |✅     |❌           |❌             |❌             |❌                |❌             |
 
 The AC200M, AC200PL, EP500 and EP500P rows come from their register maps, but their controls have not been tested through this library yet.
+
+The standby switch is the one control whose state and command are different
+words: it reads 174 (0 awake, 8 in standby) and sends the same 2 to 2013
+whichever way it is asked to move, because 2013 is a pulse rather than a
+mirror of the state. Only the two profiles that were traced through it carry
+it, and the state word has only ever been read on an Apex 300.
 
 The eco auto-off thresholds (registers 2016 and 2019) are readable on most
 Elite portables, but they are only writable where an owner has confirmed the

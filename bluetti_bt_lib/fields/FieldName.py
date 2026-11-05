@@ -54,6 +54,7 @@ class FieldName(Enum):
     CTRL_SPLIT_PHASE = "ctrl_split_phase"
     CTRL_SPLIT_PHASE_MODE = "ctrl_split_phase_mode"
     CTRL_SILENT_CHARGING = "ctrl_silent_charging"
+    CTRL_SLEEP_MODE = "ctrl_sleep_mode"
     CTRL_SYSTEM_ON_OFF = "ctrl_system_on_off"
     CTRL_TIME_CONTROL_ON = "ctrl_time_control_on"
     CTRL_UPS_MODE = "ctrl_ups_mode"

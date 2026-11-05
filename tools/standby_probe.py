@@ -11,13 +11,18 @@ Run it with the pipx venv python:
   ~/.local/share/pipx/venvs/bluetti-bt-lib-sidieje/bin/python standby_probe.py \
       -m <MAC> -t AP300 -e --switch --dump run.json
 
-By default it watches the block around register 2013 (--around/--span), and it
-closes the link between samples (--link duty). That matters: on 5 Nov an AP300
-held 2013 at 0 for a whole run of a probe that kept one connection open and sent
-24 reads per sample. A station read that continuously is being kept awake by the
-poll, so it never cycles into standby and there is no state change to find. Use
---blocks to watch the blocks the profile already polls instead, or name the
-blocks yourself with one --range per block:
+By default it watches the block the profile already reads around register 2013
+and reaches --span registers above it, and it closes the link between samples
+(--link duty). Starting from the reads the profile already issues matters: on
+5 Nov an Apex 300 ignored a read starting at 1998 outright, and one unanswered
+read ends the cycle, so nothing after it was asked and the run compared nothing.
+A read the station will not answer is therefore dropped once it has failed, and
+the sweep keeps going with the rest. Duty-cycling matters for the same kind of
+reason: on 5 Nov an AP300 held 2013 at 0 for a whole run of a probe that kept one
+connection open and sent 24 reads per sample. A station read that continuously is
+being kept awake by the poll, so it never cycles into standby and there is no
+state change to find. Use --blocks to watch every block the profile polls, or
+name the blocks yourself with one --range per block:
   --range 2000-2100 --range 100-199 --range 1300-1450
 
 Keep any sweep small. A block read costs this station about 2.5s, so 24 reads
@@ -55,6 +60,7 @@ import argparse
 import asyncio
 import json
 import logging
+import re
 import struct
 import time
 from collections import Counter
@@ -67,10 +73,13 @@ from bluetti_bt_lib.utils.device_builder import build_device
 
 # Bump when the script changes: raw.githubusercontent.com can hand back a cached
 # copy, and the header line is the only way to tell which copy actually ran.
-PROBE_REVISION = "2026-11-05.4"
+PROBE_REVISION = "2026-11-05.5"
 
 # The narrowest read worth issuing when walking the chunk widths down.
 MIN_CHUNK = 8
+
+# Blocks closer together than this are treated as one block of ground.
+MERGE_GAP = 8
 
 
 def parse_range(text: str) -> tuple[int, int]:
@@ -94,6 +103,21 @@ def parse_range(text: str) -> tuple[int, int]:
 
 def parse_watch(text: str) -> list[int]:
     return [int(part) for part in text.split(",") if part]
+
+
+def profile_blocks(device: BluettiDevice) -> list[tuple[int, int]]:
+    """The blocks this profile reads, with neighbouring blocks joined up."""
+    blocks = sorted(
+        (request.starting_address, request.starting_address + request.quantity - 1)
+        for request in device.get_polling_registers()
+    )
+    merged: list[list[int]] = []
+    for start, end in blocks:
+        if merged and start - merged[-1][1] <= MERGE_GAP:
+            merged[-1][1] = max(merged[-1][1], end)
+        else:
+            merged.append([start, end])
+    return [(start, end) for start, end in merged]
 
 
 def chunk_requests(ranges: list[tuple[int, int]], size: int) -> list[ReadableRegisters]:
@@ -336,10 +360,32 @@ async def switch_prompt(args) -> None:
         await asyncio.sleep(args.settle)
 
 
+def aborted_request(
+    requests: list[ReadableRegisters], text: str
+) -> ReadableRegisters | None:
+    """Which of our own reads the reader gave up on.
+
+    The reader reports the abort as the text of the request it was holding, so
+    match it back to the object that was passed in; the address is the fallback
+    if that text ever changes shape.
+    """
+    for request in requests:
+        if str(request) == text:
+            return request
+    match = re.search(r"starting_address=(\d+)", text)
+    if not match:
+        return None
+    address = int(match.group(1))
+    for request in requests:
+        if request.starting_address == address:
+            return request
+    return None
+
+
 async def read_once(
     reader: DeviceReader, requests: list[ReadableRegisters]
-) -> tuple[dict[int, int], int, str]:
-    """Read every watched block as one cycle: words found, blocks silent, abort.
+) -> tuple[dict[int, int], int, str, ReadableRegisters | None]:
+    """Read every watched block as one cycle: words, silent blocks, abort.
 
     One read() call means one cycle. The reader stops the cycle at the first
     request that goes unanswered, which is what keeps a late answer away from
@@ -353,7 +399,8 @@ async def read_once(
             for offset, value in enumerate(block_words(body)):
                 found[base + offset] = value
     silent = len(requests) - len(data or {})
-    return found, max(silent, 0), reader.link_stats.aborted
+    text = reader.link_stats.aborted
+    return found, max(silent, 0), text, aborted_request(requests, text)
 
 
 async def pulse(reader: DeviceReader, device: BluettiDevice, value: int) -> None:
@@ -395,6 +442,7 @@ async def run(
     trusted_count = 0
     empty = 0
     cut = 0
+    strikes: Counter[int] = Counter()
     snapshots: list[dict] = []
     meta = dump_meta(args, requests)
 
@@ -441,7 +489,7 @@ async def run(
             await pulse(reader, device, args.pulse_value)
 
         started = time.monotonic()
-        current, silent, aborted = await read_once(reader, requests)
+        current, silent, aborted, request = await read_once(reader, requests)
         took = time.monotonic() - started
 
         if args.link == "duty":
@@ -483,9 +531,38 @@ async def run(
             + ("  watch: " + watch if watch else "")
         )
         if aborted:
+            why = reader.link_stats.failure
             print(
-                "        cycle aborted at " + aborted + ": this sample is not compared"
+                "        cycle aborted at "
+                + aborted
+                + (" (" + why + ")" if why else "")
+                + ": this sample is not compared"
             )
+            if request is not None:
+                strikes[request.starting_address] += 1
+                # A read this station never answers would cut the cycle at the
+                # same place every sample, so the run would compare nothing. Give
+                # it one more chance when other reads did answer, and drop it
+                # straight away when the whole sample came back empty.
+                if current and strikes[request.starting_address] < 2:
+                    print(
+                        "        the read at "
+                        + str(request.starting_address)
+                        + " went unanswered once, asking it again"
+                    )
+                else:
+                    requests = [item for item in requests if item is not request]
+                    meta = dump_meta(args, requests)
+                    print(
+                        "        dropped the read at "
+                        + str(request.starting_address)
+                        + ": this station does not answer it ("
+                        + str(len(requests))
+                        + " reads left)"
+                    )
+                    if not requests:
+                        print("        nothing left to read")
+                        return
         for address in moved:
             print(
                 "        "
@@ -581,18 +658,19 @@ async def main() -> None:
         "--around",
         type=int,
         default=2013,
-        help="centre of the default sweep (default 2013, the standby control)",
+        help="register the default sweep is built around (default 2013, the standby control)",
     )
     parser.add_argument(
         "--span",
         type=int,
         default=15,
-        help="registers either side of --around to watch (default 15)",
+        help="registers above the profile's block to reach in the default sweep"
+        " (default 15; use --range to look below it)",
     )
     parser.add_argument(
         "--blocks",
         action="store_true",
-        help="watch the blocks this profile already polls instead of the block around --around",
+        help="watch every block this profile polls instead of the block around --around",
     )
     parser.add_argument(
         "--watch",
@@ -699,25 +777,46 @@ async def main() -> None:
         print("unsupported type")
         return
 
-    ranges = args.ranges
-    if not ranges and args.blocks:
+    size = args.chunk or device.max_poll_block
+    if args.ranges:
+        requests = chunk_requests(args.ranges, size)
+        watched = ", ".join(str(start) + "-" + str(end) for start, end in args.ranges)
+    elif args.blocks:
         # The profile's own layout: the fewest reads that still cover the
         # control block, in the sizes this station is used to answering.
-        ranges = [
-            (
-                request.starting_address,
-                request.starting_address + request.quantity - 1,
-            )
+        requests = list(device.get_polling_registers())
+        watched = "the " + str(len(requests)) + " blocks this profile polls"
+    else:
+        # Start from ground the station is known to answer. On 5 Nov an Apex 300
+        # ignored a read starting at 1998 outright, which cut the cycle before
+        # any of the control block was asked, so the sweep opens with the reads
+        # this profile already issues and only then reaches above them.
+        blocks = profile_blocks(device)
+        home = next(
+            (block for block in blocks if block[0] <= args.around <= block[1]),
+            blocks[0],
+        )
+        requests = [
+            request
             for request in device.get_polling_registers()
+            if home[0] <= request.starting_address <= home[1]
         ]
-    if not ranges:
-        ranges = [(args.around - args.span, args.around + args.span)]
+        if args.span > 0:
+            requests += chunk_requests([(home[1] + 1, home[1] + args.span)], size)
+        watched = (
+            str(home[0])
+            + "-"
+            + str(home[1] + max(args.span, 0))
+            + " (profile block "
+            + str(home[0])
+            + "-"
+            + str(home[1])
+            + " plus "
+            + str(max(args.span, 0))
+            + " above)"
+        )
     if not args.watch:
         args.watch = [args.around]
-
-    size = args.chunk or device.max_poll_block
-    requests = chunk_requests(ranges, size)
-    watched = ", ".join(str(start) + "-" + str(end) for start, end in ranges)
     widths = str(len({request.quantity for request in requests})) + " widths"
 
     print(

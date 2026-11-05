@@ -402,13 +402,18 @@ the change. `--ask` labels every sample by what you can see rather than by which
 half of the run it came from, and `--compare FILE_A FILE_B` diffs two separate
 runs.
 
-By default it watches the block around register 2013, which is where the standby
-control lives: `--around 2013 --span 15` covers 1998-2028 in two reads. `--blocks`
-watches the blocks the profile already polls instead. Either way it opens the
-link, reads and closes it again for every sample (`--link duty`), leaving `--gap`
-seconds of quiet in between. Both defaults come from the first Apex 300 run, which
-watched 352 registers in 24 reads per sample over one connection held open for
-the whole run:
+By default it watches the block the profile already reads around register 2013,
+then reaches `--span` registers above it: on an Apex 300 that is `2005-2020`,
+`2021-2023` and `2024-2038`, three reads of 16, 3 and 15 words. `--blocks` watches
+every block the profile polls instead. Either way it opens the link, reads and
+closes it again for every sample (`--link duty`), leaving `--gap` seconds of quiet
+in between. Starting from the reads the profile already issues is not caution for
+its own sake: a read starting at 1998 was ignored outright on 5 Nov, and one
+unanswered read ends the cycle, so nothing after it was asked and the run compared
+nothing. A read the station will not answer is therefore dropped once it has
+failed, and the sweep carries on with the rest. The other defaults come from the
+same first Apex 300 run, which watched 352 registers in 24 reads per sample over
+one connection held open for the whole run:
 
 * The station never left standby-adjacent state during it. Polling a station
   every few seconds is what keeps it awake, so there was no state change to

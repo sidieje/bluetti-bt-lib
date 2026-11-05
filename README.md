@@ -374,11 +374,31 @@ over, prints only the words that changed, and at the end lists the registers tha
 held more than one value:
 
 ```bash
-usage: tools/standby_probe.py [-h] -m MAC -t TYPE [-e] [--range RANGES]
-                              [--watch WATCH] [-n SAMPLES] [--gap GAP]
-                              [--link {duty,hold}] [--pulse-at PULSE_AT]
-                              [--pulse-value PULSE_VALUE] [--chunk CHUNK] [-v]
+usage: standby_probe.py [-h] [-m MAC] [-t TYPE] [-e] [--range RANGES]
+                        [--watch WATCH] [-n SAMPLES] [--gap GAP]
+                        [--link {duty,hold}] [--pulse-at PULSE_AT]
+                        [--pulse-value PULSE_VALUE] [--chunk CHUNK]
+                        [--dump FILE] [--note NOTE] [--compare FILE_A FILE_B]
+                        [--group FILE] [--ask] [--switch]
+                        [--switch-text SWITCH_TEXT] [--settle SETTLE] [-v]
 ```
+
+The changeover is the direct way to find a state register: `--switch` takes two
+samples, stops and tells you to change the state in the app, waits for enter,
+takes two more, and then prints the registers whose values never overlap between
+the two halves. Those are the ones that track the state, and the rest are noise:
+
+```bash
+~/.local/share/pipx/venvs/bluetti-bt-lib-sidieje/bin/python standby_probe.py \
+    -m <MAC> -t AP300 -e --switch --dump run.json
+~/.local/share/pipx/venvs/bluetti-bt-lib-sidieje/bin/python standby_probe.py --group run.json
+```
+
+Use `--switch-text` when you are switching standby off instead of on, `-n` for a
+different number of samples per side, and `--settle` for how long to wait after
+the change. `--ask` labels every sample by what you can see rather than by which
+half of the run it came from, and `--compare FILE_A FILE_B` diffs two separate
+runs.
 
 By default it watches the blocks the profile already polls, and it opens the
 link, reads and closes it again for every sample (`--link duty`), leaving `--gap`

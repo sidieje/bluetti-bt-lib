@@ -37,10 +37,23 @@ That writes ctrl_sleep_mode before sample 10, so the write and the words that
 follow it sit on one timeline. A station only answers one BLE connection at a
 time, so a bluetti-write from another terminal would have to wait for this run
 to stop. In --link duty mode the pulse rides the sample's own connection.
+
+A run only shows something if the station changed state inside it. If it stays
+awake the whole time, every sample reads the same and the run says "nothing
+moved", which is a null result rather than a broken probe. So change the state
+yourself and let the probe straddle it:
+  --switch
+That takes two samples, stops, tells you to switch standby on in the app, waits
+for enter, takes two more, and then prints the registers whose values never
+overlap between the two halves. Those are the ones that track the state. Use -n
+for a different number of samples per side, --switch-text if you are switching
+standby off instead, and --dump FILE to keep the samples for a later
+--compare FILE_A FILE_B or --group FILE.
 """
 
 import argparse
 import asyncio
+import json
 import logging
 import struct
 import time
@@ -49,12 +62,13 @@ from collections import Counter
 from bluetti_bt_lib.base_devices.bluetti_device import BluettiDevice
 from bluetti_bt_lib.bluetooth import DeviceWriter, DeviceWriterConfig
 from bluetti_bt_lib.bluetooth.device_reader import DeviceReader, DeviceReaderConfig
+from bluetti_bt_lib.enums.eco_mode import EcoMode
 from bluetti_bt_lib.registers.ReadableRegisters import ReadableRegisters
 from bluetti_bt_lib.utils.device_builder import build_device
 
 # Bump when the script changes: raw.githubusercontent.com can hand back a cached
 # copy, and the header line is the only way to tell which copy actually ran.
-PROBE_REVISION = "2026-11-05.1"
+PROBE_REVISION = "2026-11-05.3"
 
 # The narrowest read worth issuing when walking the chunk widths down.
 MIN_CHUNK = 8
@@ -116,6 +130,269 @@ def show(value: int) -> str:
     return str(value) + " (0x" + format(value, "04X") + ")"
 
 
+def write_dump(path: str, meta: dict, samples: list[dict]) -> None:
+    """Save the run so it can be compared against another run later.
+
+    Rewritten after every sample, so a run that is stopped early still leaves
+    whatever it had collected.
+    """
+    with open(path, "w", encoding="utf-8") as handle:
+        json.dump({"meta": meta, "samples": samples}, handle, indent=1, sort_keys=True)
+
+
+def read_dump(path: str) -> dict:
+    with open(path, encoding="utf-8") as handle:
+        return json.load(handle)
+
+
+def seen_values(dump: dict) -> dict[int, set[int]]:
+    """Every value each register answered across a saved run."""
+    seen: dict[int, set[int]] = {}
+    for sample in dump.get("samples", []):
+        for address, value in sample.get("values", {}).items():
+            seen.setdefault(int(address), set()).add(int(value))
+    return seen
+
+
+def label(dump: dict) -> str:
+    meta = dump.get("meta", {})
+    parts = [str(meta.get("note", "")) or "unlabelled", str(meta.get("device", "?"))]
+    if meta.get("link"):
+        parts.append("link=" + str(meta["link"]))
+    if meta.get("started"):
+        parts.append(str(meta["started"]))
+    return " ".join(parts)
+
+
+def compare_dumps(path_a: str, path_b: str) -> None:
+    """Print the registers that answered differently in two saved runs."""
+    first = read_dump(path_a)
+    second = read_dump(path_b)
+    values_a = seen_values(first)
+    values_b = seen_values(second)
+
+    for path, dump, values in ((path_a, first, values_a), (path_b, second, values_b)):
+        print(
+            path
+            + ": "
+            + label(dump)
+            + ", "
+            + str(len(dump.get("samples", [])))
+            + " samples, "
+            + str(len(values))
+            + " registers"
+        )
+
+    shared = sorted(set(values_a) & set(values_b))
+    if not shared:
+        print("the two runs watched nothing in common, so there is nothing to compare")
+        return
+
+    differs = [address for address in shared if values_a[address] != values_b[address]]
+    print(str(len(shared)) + " registers were watched by both runs")
+    if not differs:
+        print(
+            "none of them answered differently: the two runs looked the same to "
+            "this station"
+        )
+    for address in differs:
+        print(
+            "  "
+            + format(address, ">5")
+            + "  "
+            + (str(first.get("meta", {}).get("note", "")) or "A")
+            + " "
+            + ", ".join(str(value) for value in sorted(values_a[address]))
+            + "   "
+            + (str(second.get("meta", {}).get("note", "")) or "B")
+            + " "
+            + ", ".join(str(value) for value in sorted(values_b[address]))
+        )
+
+    one_sided = sorted(set(values_a) ^ set(values_b))
+    if one_sided:
+        print(
+            str(len(one_sided))
+            + " register(s) only answered in one run (a block that went silent): "
+            + ", ".join(str(address) for address in one_sided)
+        )
+
+
+def dump_meta(args, requests: list[ReadableRegisters]) -> dict:
+    return {
+        "probe": PROBE_REVISION,
+        "device": args.type,
+        "mac": args.mac,
+        "link": args.link,
+        "note": args.note,
+        "gap": args.gap,
+        "started": time.strftime("%Y-%m-%dT%H:%M:%S"),
+        "blocks": [
+            [request.starting_address, request.quantity] for request in requests
+        ],
+    }
+
+
+# The AP300 keeps its output eco setup in the block it already polls. It is
+# printed as context only: eco is the load threshold that switches an output off,
+# and nothing here proves it is what puts the station into standby.
+SLEEP_MODE = 2013
+ECO_SWITCH = (("AC", 2017), ("DC", 2014))
+ECO_TIME = {"AC": 2018, "DC": 2015}
+ECO_MIN_POWER = {"AC": 2019, "DC": 2016}
+
+
+def eco_name(value: int) -> str:
+    if value in [member.value for member in EcoMode]:
+        return str(value) + "h"
+    return "no timer"
+
+
+def standby_report(current: dict[int, int], args) -> None:
+    """Print the sleep and eco words, so the setup is visible without a guess."""
+    if SLEEP_MODE in current:
+        print("  ctrl_sleep_mode (2013) reads " + show(current[SLEEP_MODE]))
+    for port, switch_address in ECO_SWITCH:
+        switch = current.get(switch_address)
+        if switch is None:
+            continue
+        timer = current.get(ECO_TIME[port]) or 0
+        power = current.get(ECO_MIN_POWER[port])
+        print(
+            "  "
+            + port
+            + " eco "
+            + ("on" if switch else "off")
+            + ": "
+            + eco_name(timer)
+            + " below "
+            + str(power)
+            + "W"
+        )
+    print(
+        "  eco is the output load threshold, not a proven standby timer: the only"
+        " standby change known to work on this station is writing 2013"
+    )
+    if args.pulse_at:
+        print(
+            "  a ctrl_sleep_mode="
+            + str(args.pulse_value)
+            + " pulse goes out before sample "
+            + str(args.pulse_at)
+            + ", which forces that change"
+        )
+    else:
+        print(
+            "  nothing is forced in this run, so it only shows something if the "
+            "station changes state on its own; use --pulse-at, or --ask to label "
+            "each sample with what you can see"
+        )
+
+
+async def ask_state() -> str:
+    """Ask the operator what the station is doing right now."""
+    answer = (
+        (
+            await asyncio.to_thread(
+                input,
+                "  what does the station look like? [a]wake/[s]tandby/enter=skip: ",
+            )
+        )
+        .strip()
+        .lower()
+    )
+    if answer.startswith("s"):
+        return "standby"
+    if answer.startswith("a"):
+        return "awake"
+    return ""
+
+
+def group_summary(dump: dict) -> None:
+    """Find the registers that track the label the operator gave each sample.
+
+    This is the question the whole probe exists for: given samples labelled by
+    what the station looked like, which registers say the same thing?
+    """
+    labels: dict[str, dict[int, set[int]]] = {}
+    for sample in dump.get("samples", []):
+        name = str(sample.get("observed", "")) or "unlabelled"
+        per = labels.setdefault(name, {})
+        for address, value in sample.get("values", {}).items():
+            per.setdefault(int(address), set()).add(int(value))
+
+    print(label(dump) + ": " + str(len(dump.get("samples", []))) + " samples")
+    named = sorted(labels)
+    print(
+        "  "
+        + ", ".join(
+            name + ": " + str(len(labels[name])) + " registers" for name in named
+        )
+    )
+    if len(named) < 2:
+        print("  label samples with --ask to split them by what you saw")
+        return
+
+    common = set.intersection(*[set(per) for per in labels.values()])
+    perfect: list[int] = []
+    partly: list[int] = []
+    for address in sorted(common):
+        sets = [labels[name][address] for name in named]
+        pairs = [
+            (sets[i], sets[j])
+            for i in range(len(sets))
+            for j in range(i + 1, len(sets))
+        ]
+        if all(not (first & second) for first, second in pairs):
+            perfect.append(address)
+        elif any(first != second for first, second in pairs):
+            partly.append(address)
+
+    if perfect:
+        print(
+            "  "
+            + str(len(perfect))
+            + " register(s) never overlap between the states, so they track it:"
+        )
+        for address in perfect:
+            print(
+                "    "
+                + format(address, ">5")
+                + "  "
+                + "  ".join(
+                    name
+                    + "="
+                    + "/".join(str(value) for value in sorted(labels[name][address]))
+                    for name in named
+                )
+            )
+    else:
+        print(
+            "  no register separated the labelled states: the state is not in "
+            "these words, or the labels do not match what the station did"
+        )
+    if partly:
+        print(
+            "  "
+            + str(len(partly))
+            + " register(s) differed but overlapped (counters, or a lag): "
+            + ", ".join(str(address) for address in partly)
+        )
+
+
+def group_report(path: str) -> None:
+    group_summary(read_dump(path))
+
+
+async def switch_prompt(args) -> None:
+    """Hold the run still while the operator changes the station by hand."""
+    print("")
+    print("  >>> " + args.switch_text)
+    await asyncio.to_thread(input, "  press enter once it has settled: ")
+    if args.settle:
+        await asyncio.sleep(args.settle)
+
+
 async def read_once(
     reader: DeviceReader, requests: list[ReadableRegisters]
 ) -> tuple[dict[int, int], int, str]:
@@ -175,9 +452,36 @@ async def run(
     trusted_count = 0
     empty = 0
     cut = 0
+    reported = False
+    snapshots: list[dict] = []
+    meta = dump_meta(args, requests)
 
-    for sample in range(1, args.samples + 1):
-        stamp = "[" + format(sample, ">3") + "] " + time.strftime("%H:%M:%S")
+    # --switch runs the same number of samples on each side of a manual change,
+    # so the two halves can be compared against each other at the end.
+    phases = ["before", "after"] if args.switch else ["before"]
+    total = args.samples * len(phases)
+
+    for index in range(1, total + 1):
+        phase = phases[(index - 1) // args.samples]
+        if args.switch and index > 1 and (index - 1) % args.samples == 0:
+            await switch_prompt(args)
+
+        stamp = (
+            "["
+            + format(index, ">3")
+            + "] "
+            + time.strftime("%H:%M:%S")
+            + ("  " + phase if args.switch else "")
+        )
+
+        # Ask before touching the link: connecting can itself wake a station, so
+        # the label has to describe what the operator saw beforehand.
+        if args.switch:
+            observed = phase
+        elif args.ask:
+            observed = await ask_state()
+        else:
+            observed = ""
 
         connected = True
         if args.link == "duty":
@@ -189,11 +493,11 @@ async def run(
         if not connected:
             empty += 1
             print(stamp + "  could not connect")
-            if sample < args.samples:
+            if index < total:
                 await asyncio.sleep(args.gap)
             continue
 
-        if args.pulse_at == sample:
+        if args.pulse_at == index:
             await pulse(reader, device, args.pulse_value)
 
         started = time.monotonic()
@@ -235,6 +539,7 @@ async def run(
             + format(len(current), ">4")
             + " words"
             + ("  " + str(silent) + " blocks silent" if silent else "")
+            + ("  seen: " + observed if observed else "")
             + ("  watch: " + watch if watch else "")
         )
         if aborted:
@@ -254,16 +559,45 @@ async def run(
             print("        nothing answered this sample")
 
         if trusted:
+            if not reported:
+                reported = True
+                standby_report(current, args)
+            snapshots.append(
+                {
+                    "index": index,
+                    "time": time.strftime("%H:%M:%S"),
+                    "took": round(took, 2),
+                    "observed": observed,
+                    "values": {
+                        str(address): value
+                        for address, value in sorted(current.items())
+                    },
+                }
+            )
+            if args.dump:
+                write_dump(args.dump, meta, snapshots)
             previous = current
-        if sample < args.samples:
+        if index < total:
             await asyncio.sleep(args.gap)
 
     print("")
-    print(str(trusted_count) + "/" + str(args.samples) + " samples compared")
+    print(str(trusted_count) + "/" + str(total) + " samples compared")
     if empty:
         print(str(empty) + " samples got nothing at all")
     if cut:
         print(str(cut) + " samples were cut short mid-cycle and left out")
+    if args.dump:
+        print(
+            "saved "
+            + str(len(snapshots))
+            + " samples to "
+            + args.dump
+            + " (compare with --compare)"
+        )
+    if args.switch:
+        print("")
+        group_summary({"meta": meta, "samples": snapshots})
+        print("")
 
     candidates = sorted(a for a, seen in values.items() if len(seen) > 1)
     if not candidates:
@@ -293,8 +627,8 @@ async def main() -> None:
         description="watch which registers move when a ctrl_sleep_mode pulse goes out"
         " [probe " + PROBE_REVISION + "]",
     )
-    parser.add_argument("-m", "--mac", required=True)
-    parser.add_argument("-t", "--type", required=True)
+    parser.add_argument("-m", "--mac")
+    parser.add_argument("-t", "--type")
     parser.add_argument(
         "-e", "--enc", action="store_true", help="station needs encryption"
     )
@@ -311,7 +645,13 @@ async def main() -> None:
         default=[],
         help="registers to print on every sample, comma separated",
     )
-    parser.add_argument("-n", "--samples", type=int, default=20)
+    parser.add_argument(
+        "-n",
+        "--samples",
+        type=int,
+        default=None,
+        help="samples to take (default 20, or 2 per side with --switch)",
+    )
     parser.add_argument(
         "--gap",
         type=float,
@@ -341,8 +681,63 @@ async def main() -> None:
         default=0,
         help="widest read to issue for --range (default: what the profile asks for)",
     )
+    parser.add_argument(
+        "--dump",
+        metavar="FILE",
+        help="save every compared sample to FILE, so two runs can be compared later",
+    )
+    parser.add_argument(
+        "--note",
+        default="",
+        help="label saved with --dump, for example awake or asleep",
+    )
+    parser.add_argument(
+        "--compare",
+        nargs=2,
+        metavar=("FILE_A", "FILE_B"),
+        help="compare two --dump files and exit",
+    )
+    parser.add_argument(
+        "--group",
+        metavar="FILE",
+        help="report which registers track the labels inside one --dump file, and exit",
+    )
+    parser.add_argument(
+        "--ask",
+        action="store_true",
+        help="ask what the station looks like before each sample, and save that label",
+    )
+    parser.add_argument(
+        "--switch",
+        action="store_true",
+        help="take the samples twice, pausing in between to change standby by hand,"
+        " then report which registers separate the two halves",
+    )
+    parser.add_argument(
+        "--switch-text",
+        default="switch standby mode ON in the app now",
+        help="what to tell the operator to do at the pause",
+    )
+    parser.add_argument(
+        "--settle",
+        type=float,
+        default=10.0,
+        help="seconds to wait after the pause before sampling again (default 10)",
+    )
     parser.add_argument("-v", "--verbose", action="store_true")
     args = parser.parse_args()
+
+    if args.samples is None:
+        args.samples = 2 if args.switch else 20
+
+    if args.compare:
+        compare_dumps(args.compare[0], args.compare[1])
+        return
+    if args.group:
+        group_report(args.group)
+        return
+    if not args.mac or not args.type:
+        parser.error("-m/--mac and -t/--type are required (unless using --compare)")
 
     device = build_device(args.type + "12345678")
     if device is None:
@@ -379,6 +774,10 @@ async def main() -> None:
         + ")"
         + "  link="
         + args.link
+        + "  "
+        + str(args.samples * (2 if args.switch else 1))
+        + " samples"
+        + ("  switch" if args.switch else "")
         + " [probe "
         + PROBE_REVISION
         + "]"

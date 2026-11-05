@@ -62,7 +62,9 @@ class AP300(BaseDeviceV2):
                 # has shown plus the 3 and 4 the official integration uses, so
                 # those can be tried from the bench. Which register holds the
                 # awake/standby state is still open; tools/standby_probe.py
-                # watches the neighbouring registers for it.
+                # watches the neighbouring registers for it, and polls them
+                # through a link it closes between samples, because watching
+                # over one open connection kept the station awake.
                 NumberField(FieldName.CTRL_SLEEP_MODE, 2013, 1, 0, 4, 1),
                 SwitchField(FieldName.CTRL_ECO_DC, 2014),
                 SelectField(FieldName.CTRL_ECO_TIME_MODE_DC, 2015, EcoMode),

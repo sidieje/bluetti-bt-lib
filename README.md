@@ -369,27 +369,44 @@ quiet, because a station that is still waking misses its first request.
 the command writes turns out not to hold it. Register 2013 is the case that
 prompted it: an Apex 300 reads 0 there while awake and 2 in standby, but writing
 2 both wakes and sleeps the station and the register reads 0 again afterwards,
-so it is a pulse rather than a state. The probe keeps one connection open, reads
-a block of registers over and over, prints only the words that changed, and at
-the end lists the registers that held more than one value:
+so it is a pulse rather than a state. The probe reads a set of registers over and
+over, prints only the words that changed, and at the end lists the registers that
+held more than one value:
 
 ```bash
 usage: tools/standby_probe.py [-h] -m MAC -t TYPE [-e] [--range RANGES]
                               [--watch WATCH] [-n SAMPLES] [--gap GAP]
-                              [--pulse-at PULSE_AT] [--pulse-value PULSE_VALUE]
-                              [--chunk CHUNK] [-v]
+                              [--link {duty,hold}] [--pulse-at PULSE_AT]
+                              [--pulse-value PULSE_VALUE] [--chunk CHUNK] [-v]
 ```
 
-`--range 2000-2100` is the control block by default, and more `--range` options
-sweep the rest of it as well (`--range 100-199 --range 1300-1450`). Each read is
-cut to the width the profile already asks for, because a station that refuses an
-unmapped register answers the whole block with an exception. `--pulse-at 10
---pulse-value 2` writes `ctrl_sleep_mode` before sample 10 over the same
-connection, so the write and the words that follow it line up on one timeline; a
-second terminal cannot do that, because a station only answers one BLE
-connection at a time. A sample where nothing answered at all is printed as such,
-which is itself a candidate signal: a station that slept may have dropped the
-link.
+By default it watches the blocks the profile already polls, and it opens the
+link, reads and closes it again for every sample (`--link duty`), leaving `--gap`
+seconds of quiet in between. Both choices come from the first Apex 300 run, which
+watched 352 registers in 24 reads per sample over one connection held open for
+the whole run:
+
+* The station never left standby-adjacent state during it. Polling a station
+  every few seconds is what keeps it awake, so there was no state change to
+  find. Duty-cycling gives it the quiet it needs to fall asleep on its own.
+* A minute of continuous reads made the station drop requests, and a dropped
+  request corrupts the sweep. A function 03 answer carries no address, so the
+  byte count is the only thing tying an answer to the request that asked for it:
+  when every read is the same width, the late answer to one settles the next and
+  a whole block of values lands under the wrong addresses. That run showed one
+  block slide by exactly 16 registers between two samples. The probe asks for
+  different widths in consecutive reads, and a sample whose cycle was cut short
+  is reported but never compared, so a corrupted sample cannot invent a change.
+
+`--range 2000-2100 --range 100-199` sweeps registers the profile does not poll.
+Keep such a sweep small for the same reason: this station spends about 2.5s per
+block read, so the reads themselves decide how much traffic the station sees.
+`--pulse-at 10 --pulse-value 2` writes `ctrl_sleep_mode` before sample 10 over
+the sample's own connection, so the write and the words that follow it line up on
+one timeline; a second terminal cannot do that, because a station only answers
+one BLE connection at a time. A sample where nothing answered at all is printed
+as such, which is itself a candidate signal: a station that slept may have
+dropped the link.
 
 ## Adding fields
 

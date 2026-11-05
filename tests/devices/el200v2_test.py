@@ -7,6 +7,11 @@ from bluetti_bt_lib.devices.el100v2 import EL100V2
 from bluetti_bt_lib.devices.el200v2 import EL200V2
 
 
+# The 2013 standby register is being read on the EL100 V2 alone before the rest
+# of the family takes it, so it is the one field the clone may be missing.
+EL100V2_ONLY_PROBE = ("ctrl_sleep_mode", 2013)
+
+
 def _field_signature(device):
     return [(f.name, f.address) for f in device.fields]
 
@@ -17,8 +22,12 @@ class TestEL200V2(unittest.TestCase):
 
     def test_it_is_a_clone_of_the_el100v2_profile(self):
         # The EL200V2 shares the Elite V2 register map, so the profiles are
-        # expected to stay identical apart from the class name.
-        self.assertEqual(_field_signature(self.device), _field_signature(EL100V2()))
+        # expected to stay identical apart from the class name and the register
+        # still under test on the EL100 V2.
+        self.assertEqual(
+            _field_signature(self.device),
+            [f for f in _field_signature(EL100V2()) if f != EL100V2_ONLY_PROBE],
+        )
 
     def test_it_builds_from_every_reported_name(self):
         # The unit reports "Elite 200 V2" in register 110 and advertises that

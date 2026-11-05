@@ -1,3 +1,4 @@
+import struct
 import unittest
 
 from bluetti_bt_lib.devices.el100v2 import EL100V2
@@ -63,6 +64,31 @@ class TestEL100V2(unittest.TestCase):
         # voltage changed. The real AC output is 1431.
         self.assertEqual(self._field("ac_output_voltage").address, 1431)
         self.assertFalse(any(f.address == 1511 for f in self.device.fields))
+
+    def test_standby_register_2013_reads_raw_and_stays_unwritten(self):
+        # An Elite 200 V2 owner traced the official integration's sleep switch
+        # to register 2013, which it writes as SetCtrlPowerOn: 4 to enter
+        # sleep, 3 to leave it. The read is what has to be checked first, so
+        # the word is reported as it reads and nothing offers a write for it.
+        field = self._field("ctrl_sleep_mode")
+        self.assertEqual(field.address, 2013)
+        self.assertFalse(field.is_writeable())
+        self.assertIsNone(self.device.build_write_command("ctrl_sleep_mode", 4))
+
+        # 3 and 4 are the two values the official integration writes. A switch
+        # field would leave both unparsed, which is why this one is a uint.
+        for value in (0, 1, 3, 4):
+            with self.subTest(value=value):
+                self.assertEqual(field.parse(struct.pack("!H", value)), value)
+
+    def test_standby_register_adds_no_poll_request(self):
+        # 2013 sits inside the 2005+16 block the profile already asks for, so
+        # probing it costs no extra round trip.
+        blocks = [
+            (r.starting_address, r.quantity) for r in self.device.get_polling_registers()
+        ]
+        self.assertIn((2005, 16), blocks)
+        self.assertEqual(len(blocks), 7)
 
     def test_selects_take_the_default_verification_window(self):
         for name in SLOW_SELECTS:

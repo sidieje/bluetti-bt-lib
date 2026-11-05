@@ -135,6 +135,16 @@ pulse mode with reverse charging off has never been read from a station
 either. They are named `ctrl_*` regardless, so the entity names do not change
 when the write side lands.
 
+The Elite 100 V2 reports register 2013 as `ctrl_sleep_mode`, the word the
+official integration writes when its sleep switch is toggled: an Elite 200 V2
+owner saw `SetCtrlPowerOn` go out as 4 to enter sleep and 3 to leave it, after
+the integration had armed two remote-control settings whose registers it never
+names. The official integration does not say which register it writes, so this
+one is the deduction of an owner rather than a confirmed mapping: it is exposed
+read only, on the Elite 100 V2 alone, and reported as the raw word because 3
+and 4 are not the 0/1 a switch decodes. A station that has never been put to
+sleep is expected to report something else.
+
 ## Installation
 
 ```bash

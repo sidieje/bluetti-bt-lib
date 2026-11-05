@@ -9,6 +9,9 @@ from bluetti_bt_lib.devices import AP300, EL100V2, EL100mini, EL200V2, EL300
 # EL100 V2, so the register is right and the model is the exception.
 GRID_CHARGE_SWITCH = "ctrl_grid_charge_on"
 EL100V2_ONLY_DIFFERENCE = (GRID_CHARGE_SWITCH, 2008, 1)
+# The 2013 standby register is being read on the EL100 V2 alone before the rest
+# of the family takes it.
+EL100V2_ONLY_PROBE = ("ctrl_sleep_mode", 2013, 1)
 
 
 def _layout(device_cls):
@@ -24,7 +27,7 @@ class TestAP300(unittest.TestCase):
         self.assertNotIn(GRID_CHARGE_SWITCH, names)
 
     def test_layout_matches_the_el100v2_apart_from_the_grid_charge_switch(self):
-        reference = set(_layout(EL100V2))
+        reference = set(_layout(EL100V2)) - {EL100V2_ONLY_PROBE}
         ap300 = set(_layout(AP300))
 
         self.assertEqual(reference - ap300, {EL100V2_ONLY_DIFFERENCE})

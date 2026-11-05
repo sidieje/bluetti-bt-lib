@@ -9,15 +9,15 @@ candidates for a real state register.
 
 Run it with the pipx venv python:
   ~/.local/share/pipx/venvs/bluetti-bt-lib-sidieje/bin/python standby_probe.py \
-      -m <MAC> -t AP300 -e -n 20 --gap 60
+      -m <MAC> -t AP300 -e --switch --dump run.json
 
-By default it watches the blocks the profile already polls, and it closes the
-link between samples (--link duty). That matters: on 5 Nov an AP300 held 2013
-at 0 for a whole run of a probe that kept one connection open and sent 24 reads
-per sample. A station read that continuously is being kept awake by the poll,
-so it never cycles into standby and there is no state change to find.
-
-Widen the sweep with one --range per block:
+By default it watches the block around register 2013 (--around/--span), and it
+closes the link between samples (--link duty). That matters: on 5 Nov an AP300
+held 2013 at 0 for a whole run of a probe that kept one connection open and sent
+24 reads per sample. A station read that continuously is being kept awake by the
+poll, so it never cycles into standby and there is no state change to find. Use
+--blocks to watch the blocks the profile already polls instead, or name the
+blocks yourself with one --range per block:
   --range 2000-2100 --range 100-199 --range 1300-1450
 
 Keep any sweep small. A block read costs this station about 2.5s, so 24 reads
@@ -62,13 +62,12 @@ from collections import Counter
 from bluetti_bt_lib.base_devices.bluetti_device import BluettiDevice
 from bluetti_bt_lib.bluetooth import DeviceWriter, DeviceWriterConfig
 from bluetti_bt_lib.bluetooth.device_reader import DeviceReader, DeviceReaderConfig
-from bluetti_bt_lib.enums.eco_mode import EcoMode
 from bluetti_bt_lib.registers.ReadableRegisters import ReadableRegisters
 from bluetti_bt_lib.utils.device_builder import build_device
 
 # Bump when the script changes: raw.githubusercontent.com can hand back a cached
 # copy, and the header line is the only way to tell which copy actually ran.
-PROBE_REVISION = "2026-11-05.3"
+PROBE_REVISION = "2026-11-05.4"
 
 # The narrowest read worth issuing when walking the chunk widths down.
 MIN_CHUNK = 8
@@ -233,62 +232,6 @@ def dump_meta(args, requests: list[ReadableRegisters]) -> dict:
     }
 
 
-# The AP300 keeps its output eco setup in the block it already polls. It is
-# printed as context only: eco is the load threshold that switches an output off,
-# and nothing here proves it is what puts the station into standby.
-SLEEP_MODE = 2013
-ECO_SWITCH = (("AC", 2017), ("DC", 2014))
-ECO_TIME = {"AC": 2018, "DC": 2015}
-ECO_MIN_POWER = {"AC": 2019, "DC": 2016}
-
-
-def eco_name(value: int) -> str:
-    if value in [member.value for member in EcoMode]:
-        return str(value) + "h"
-    return "no timer"
-
-
-def standby_report(current: dict[int, int], args) -> None:
-    """Print the sleep and eco words, so the setup is visible without a guess."""
-    if SLEEP_MODE in current:
-        print("  ctrl_sleep_mode (2013) reads " + show(current[SLEEP_MODE]))
-    for port, switch_address in ECO_SWITCH:
-        switch = current.get(switch_address)
-        if switch is None:
-            continue
-        timer = current.get(ECO_TIME[port]) or 0
-        power = current.get(ECO_MIN_POWER[port])
-        print(
-            "  "
-            + port
-            + " eco "
-            + ("on" if switch else "off")
-            + ": "
-            + eco_name(timer)
-            + " below "
-            + str(power)
-            + "W"
-        )
-    print(
-        "  eco is the output load threshold, not a proven standby timer: the only"
-        " standby change known to work on this station is writing 2013"
-    )
-    if args.pulse_at:
-        print(
-            "  a ctrl_sleep_mode="
-            + str(args.pulse_value)
-            + " pulse goes out before sample "
-            + str(args.pulse_at)
-            + ", which forces that change"
-        )
-    else:
-        print(
-            "  nothing is forced in this run, so it only shows something if the "
-            "station changes state on its own; use --pulse-at, or --ask to label "
-            "each sample with what you can see"
-        )
-
-
 async def ask_state() -> str:
     """Ask the operator what the station is doing right now."""
     answer = (
@@ -316,7 +259,7 @@ def group_summary(dump: dict) -> None:
     """
     labels: dict[str, dict[int, set[int]]] = {}
     for sample in dump.get("samples", []):
-        name = str(sample.get("observed", "")) or "unlabelled"
+        name = str(sample.get("observed") or sample.get("phase") or "unlabelled")
         per = labels.setdefault(name, {})
         for address, value in sample.get("values", {}).items():
             per.setdefault(int(address), set()).add(int(value))
@@ -452,7 +395,6 @@ async def run(
     trusted_count = 0
     empty = 0
     cut = 0
-    reported = False
     snapshots: list[dict] = []
     meta = dump_meta(args, requests)
 
@@ -476,9 +418,7 @@ async def run(
 
         # Ask before touching the link: connecting can itself wake a station, so
         # the label has to describe what the operator saw beforehand.
-        if args.switch:
-            observed = phase
-        elif args.ask:
+        if args.ask:
             observed = await ask_state()
         else:
             observed = ""
@@ -559,15 +499,13 @@ async def run(
             print("        nothing answered this sample")
 
         if trusted:
-            if not reported:
-                reported = True
-                standby_report(current, args)
             snapshots.append(
                 {
                     "index": index,
                     "time": time.strftime("%H:%M:%S"),
                     "took": round(took, 2),
                     "observed": observed,
+                    "phase": phase,
                     "values": {
                         str(address): value
                         for address, value in sorted(current.items())
@@ -637,7 +575,24 @@ async def main() -> None:
         dest="ranges",
         type=parse_range,
         action="append",
-        help="block to watch, start-end (repeatable; default: the blocks this profile polls)",
+        help="block to watch, start-end (repeatable; default: the block around --around)",
+    )
+    parser.add_argument(
+        "--around",
+        type=int,
+        default=2013,
+        help="centre of the default sweep (default 2013, the standby control)",
+    )
+    parser.add_argument(
+        "--span",
+        type=int,
+        default=15,
+        help="registers either side of --around to watch (default 15)",
+    )
+    parser.add_argument(
+        "--blocks",
+        action="store_true",
+        help="watch the blocks this profile already polls instead of the block around --around",
     )
     parser.add_argument(
         "--watch",
@@ -744,20 +699,26 @@ async def main() -> None:
         print("unsupported type")
         return
 
-    if args.ranges:
-        size = args.chunk or device.max_poll_block
-        requests = chunk_requests(args.ranges, size)
-        watched = ", ".join(str(start) + "-" + str(end) for start, end in args.ranges)
-        widths = str(len(set(request.quantity for request in requests))) + " widths"
-    else:
+    ranges = args.ranges
+    if not ranges and args.blocks:
         # The profile's own layout: the fewest reads that still cover the
         # control block, in the sizes this station is used to answering.
-        requests = list(device.get_polling_registers())
-        watched = "the " + str(len(requests)) + " blocks this profile polls"
-        widths = ", ".join(
-            str(request.starting_address) + "+" + str(request.quantity)
-            for request in requests
-        )
+        ranges = [
+            (
+                request.starting_address,
+                request.starting_address + request.quantity - 1,
+            )
+            for request in device.get_polling_registers()
+        ]
+    if not ranges:
+        ranges = [(args.around - args.span, args.around + args.span)]
+    if not args.watch:
+        args.watch = [args.around]
+
+    size = args.chunk or device.max_poll_block
+    requests = chunk_requests(ranges, size)
+    watched = ", ".join(str(start) + "-" + str(end) for start, end in ranges)
+    widths = str(len({request.quantity for request in requests})) + " widths"
 
     print(
         args.type

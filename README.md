@@ -375,6 +375,7 @@ held more than one value:
 
 ```bash
 usage: standby_probe.py [-h] [-m MAC] [-t TYPE] [-e] [--range RANGES]
+                        [--around AROUND] [--span SPAN] [--blocks]
                         [--watch WATCH] [-n SAMPLES] [--gap GAP]
                         [--link {duty,hold}] [--pulse-at PULSE_AT]
                         [--pulse-value PULSE_VALUE] [--chunk CHUNK]
@@ -383,10 +384,11 @@ usage: standby_probe.py [-h] [-m MAC] [-t TYPE] [-e] [--range RANGES]
                         [--switch-text SWITCH_TEXT] [--settle SETTLE] [-v]
 ```
 
-The changeover is the direct way to find a state register: `--switch` takes two
-samples, stops and tells you to change the state in the app, waits for enter,
-takes two more, and then prints the registers whose values never overlap between
-the two halves. Those are the ones that track the state, and the rest are noise:
+The changeover is the direct way to find a state register: `--switch` scans the
+block twice, stops and tells you to switch standby on, waits for enter, scans the
+same block twice more, and then prints the registers whose values never overlap
+between the two halves. Those are the ones that track the state, and the rest are
+noise:
 
 ```bash
 ~/.local/share/pipx/venvs/bluetti-bt-lib-sidieje/bin/python standby_probe.py \
@@ -400,9 +402,11 @@ the change. `--ask` labels every sample by what you can see rather than by which
 half of the run it came from, and `--compare FILE_A FILE_B` diffs two separate
 runs.
 
-By default it watches the blocks the profile already polls, and it opens the
+By default it watches the block around register 2013, which is where the standby
+control lives: `--around 2013 --span 15` covers 1998-2028 in two reads. `--blocks`
+watches the blocks the profile already polls instead. Either way it opens the
 link, reads and closes it again for every sample (`--link duty`), leaving `--gap`
-seconds of quiet in between. Both choices come from the first Apex 300 run, which
+seconds of quiet in between. Both defaults come from the first Apex 300 run, which
 watched 352 registers in 24 reads per sample over one connection held open for
 the whole run:
 

@@ -16,9 +16,6 @@ UNIFIED_LAYOUT_DEVICES = (EL100V2, EL200V2, EL300)
 # control) while the app showed Standard, so that profile leaves it out
 # rather than offering a dropdown that could write the wrong mode to a UPS.
 EL30V2_ONLY_DIFFERENCE = ("ctrl_ups_mode", 2005, 1)
-# The 2013 standby register is being read on the EL100 V2 alone before the rest
-# of the family takes it, so it is the other field the EL30 V2 is missing.
-EL100V2_ONLY_PROBE = ("ctrl_sleep_mode", 2013, 1)
 
 
 def _layout(device_cls):
@@ -31,14 +28,13 @@ class TestEL300(unittest.TestCase):
         self.assertIsInstance(build_device("EL30012345678"), EL300)
 
     def test_layout_matches_the_other_unified_portables(self):
-        reference = [f for f in _layout(EL100V2) if f != EL100V2_ONLY_PROBE]
+        reference = _layout(EL100V2)
         for device_cls in UNIFIED_LAYOUT_DEVICES:
             with self.subTest(device=device_cls.__name__):
-                layout = [f for f in _layout(device_cls) if f != EL100V2_ONLY_PROBE]
-                self.assertEqual(layout, reference)
+                self.assertEqual(_layout(device_cls), reference)
 
     def test_el30v2_differs_only_by_the_working_mode(self):
-        reference = set(_layout(EL100V2)) - {EL100V2_ONLY_PROBE}
+        reference = set(_layout(EL100V2))
         el30v2 = set(_layout(EL30V2))
 
         self.assertEqual(reference - el30v2, {EL30V2_ONLY_DIFFERENCE})

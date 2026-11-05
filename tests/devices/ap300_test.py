@@ -1,3 +1,4 @@
+import struct
 import unittest
 
 from bluetti_bt_lib.devices import AP300, EL100V2, EL100mini, EL200V2, EL300
@@ -9,9 +10,10 @@ from bluetti_bt_lib.devices import AP300, EL100V2, EL100mini, EL200V2, EL300
 # EL100 V2, so the register is right and the model is the exception.
 GRID_CHARGE_SWITCH = "ctrl_grid_charge_on"
 EL100V2_ONLY_DIFFERENCE = (GRID_CHARGE_SWITCH, 2008, 1)
-# The 2013 standby register is being read on the EL100 V2 alone before the rest
-# of the family takes it.
-EL100V2_ONLY_PROBE = ("ctrl_sleep_mode", 2013, 1)
+# The 2013 standby register is being read on the Apex 300 alone. An Elite 200 V2
+# owner traced the official integration's sleep switch to it, but the Elite 100
+# V2 has no sleep switch in its app, so this is the unit that can answer it.
+AP300_ONLY_PROBE = ("ctrl_sleep_mode", 2013, 1)
 
 
 def _layout(device_cls):
@@ -26,12 +28,37 @@ class TestAP300(unittest.TestCase):
         names = {name for name, _, _ in _layout(AP300)}
         self.assertNotIn(GRID_CHARGE_SWITCH, names)
 
-    def test_layout_matches_the_el100v2_apart_from_the_grid_charge_switch(self):
-        reference = set(_layout(EL100V2)) - {EL100V2_ONLY_PROBE}
+    def test_layout_matches_the_el100v2_apart_from_the_recorded_registers(self):
+        reference = set(_layout(EL100V2))
         ap300 = set(_layout(AP300))
 
         self.assertEqual(reference - ap300, {EL100V2_ONLY_DIFFERENCE})
-        self.assertEqual(ap300 - reference, set())
+        self.assertEqual(ap300 - reference, {AP300_ONLY_PROBE})
+
+    def test_standby_register_2013_reads_raw_and_stays_unwritten(self):
+        # The official integration writes this register as SetCtrlPowerOn when
+        # its sleep switch is toggled: 4 to enter sleep, 3 to leave it. The read
+        # is what has to be checked first, so the word is reported as it reads
+        # and nothing offers a write for it.
+        field = next(f for f in AP300().fields if f.name == "ctrl_sleep_mode")
+        self.assertEqual(field.address, 2013)
+        self.assertFalse(field.is_writeable())
+        self.assertIsNone(AP300().build_write_command("ctrl_sleep_mode", 4))
+
+        # 3 and 4 are the two values the official integration writes. A switch
+        # field would leave both unparsed, which is why this one is a uint.
+        for value in (0, 1, 3, 4):
+            with self.subTest(value=value):
+                self.assertEqual(field.parse(struct.pack("!H", value)), value)
+
+    def test_standby_register_adds_no_poll_request(self):
+        # 2013 sits inside the 2005+16 block the profile already asks for, so
+        # probing it costs no extra round trip.
+        blocks = [
+            (r.starting_address, r.quantity) for r in AP300().get_polling_registers()
+        ]
+        self.assertIn((2005, 16), blocks)
+        self.assertEqual(len(blocks), 7)
 
     def test_the_other_elite_portables_keep_the_switch(self):
         # The exclusion belongs to the Apex 300 alone; the Elite portables are

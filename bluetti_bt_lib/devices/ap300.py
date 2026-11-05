@@ -47,6 +47,17 @@ class AP300(BaseDeviceV2):
                 # read-back, so the switch is left off this profile.
                 SwitchField(FieldName.CTRL_AC, 2011),
                 SwitchField(FieldName.CTRL_DC, 2012),
+                # 2013 is the word the official integration writes as
+                # SetCtrlPowerOn when its sleep switch is toggled: 4 to enter
+                # sleep, 3 to leave it, after arming remoteSet (1) and
+                # remoteSetSoc (20). An Elite 200 V2 owner reported that write
+                # in the official integration's debug log and traced it to this
+                # register; nothing here has read or written it yet. The Elite
+                # 100 V2 has no sleep switch in its app, so the Apex 300 is the
+                # unit to ask. Reported as the raw word, because 3 and 4 are not
+                # the 0/1 a switch field decodes, and read only, because a write
+                # that means standby could drop the connection it came in on.
+                UIntField(FieldName.CTRL_SLEEP_MODE, 2013),
                 SwitchField(FieldName.CTRL_ECO_DC, 2014),
                 SelectField(FieldName.CTRL_ECO_TIME_MODE_DC, 2015, EcoMode),
                 # The app lets the owner set the DC eco auto-off threshold.

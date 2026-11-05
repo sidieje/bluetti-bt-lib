@@ -135,28 +135,32 @@ pulse mode with reverse charging off has never been read from a station
 either. They are named `ctrl_*` regardless, so the entity names do not change
 when the write side lands.
 
-The Apex 300 reports register 2013 as `ctrl_sleep_mode`, the word the official
-integration writes when its sleep switch is toggled: an Elite 200 V2 owner saw
-`SetCtrlPowerOn` go out as 4 to enter sleep and 3 to leave it, after the
-integration had armed two remote-control settings whose registers it never
-names. The official integration does not say which register it writes, so that
-mapping belongs to an owner rather than to the integration, and the Elite 100
-V2 has no sleep switch in its app at all, so the Apex 300 is the portable that
-could be asked. It answers 0 while awake and 2 in standby, but writing 2 both
-wakes and sleeps it and the register reads 0 again either way, so 2013 behaves
-like a pulse (a power button) rather than a mirror of the state. The word is
-reported as it reads, because neither value is the 0/1 a switch decodes, and
-the write range covers 0-4: the two words the station has shown plus the 3 and
-4 the official integration uses. Two other words do hold the state, found by
-sweeping the registers around 2013 and the 100-199 block while standby was
-switched by hand in the middle of a run (`tools/standby_probe.py --switch`):
-register 174 reads 0 while the station is awake and 8 in standby, and register
-124 reads 0x0800 awake and 0x2800 in standby. Both flipped the same way in the
-run that switched standby on and the run that switched it back off on 5 Nov, so
-they are reported as `standby_state` and `standby_flags` respectively, as plain
-words: only the one bit that moved in each is known, and the other bits have not
-been worked out. Register 2003 changed in every sample as well, but it climbs
-and then resets, so it is a counter rather than a state.
+The Apex 300 has a `ctrl_sleep_mode` switch for its standby. Register 2013 is
+the word the official integration writes when its sleep switch is toggled: an
+Elite 200 V2 owner saw `SetCtrlPowerOn` go out as 4 to enter sleep and 3 to
+leave it, after the integration had armed two remote-control settings whose
+registers it never names. The official integration does not say which register
+it writes, so that mapping belongs to an owner rather than to the integration,
+and the Elite 100 V2 has no sleep switch in its app at all, so the Apex 300 is
+the portable that could be asked. It answers 0 at 2013 while awake and 2 in
+standby, but writing 2 both wakes and sleeps it and the register reads 0 again
+either way, so 2013 behaves like a pulse (a power button) rather than a mirror
+of the state. Sweeping the registers around 2013 and the 100-199 block while
+standby was switched by hand in the middle of a run (`tools/standby_probe.py
+--switch`) found the state itself: register 174 reads 0 while the station is
+awake and 8 in standby, and register 124 reads 0x0800 awake and 0x2800 in
+standby. Both flipped the same way in the run that switched standby on and the
+run that switched it back off on 5 Nov. The switch therefore reads whether it is
+on from 174, by the standby bit, and always writes 2 to 2013 whichever way it is
+asked: on means standby. 2013 is still read inside the 2005+16 block the profile
+polls, but no field reports it now that the switch only writes it. Register 124
+stays a plain read-only word called `standby_flags`, because it carries other
+state beside standby: the same word read 0x0802 with the AC inverter on and
+0x0806 with the AC and DC inverters on, so only bit 13 is known to be standby.
+Register 2003 changed in every sample as well, but it climbs and then resets, so
+it is a counter rather than a state. Nothing has measured how long 174 takes to
+follow the pulse, so a write waits 10 s for it before being reported
+unverified; a station that moves sooner is reported as soon as it is seen.
 
 ## Installation
 
@@ -426,8 +430,8 @@ at full speed, so it is worth asking for whenever `--range` covers ground nobody
 has read before. The first changeover run on 5 Nov compared 34 words across
 `2005-2038` and found nothing moving between standby on and standby off, so the
 next sweep looked wider: `--range 100-199 --range 1300-1450 --range 2000-2100`
-found registers 124 and 174, which the Apex 300 profile now reports as
-`standby_flags` and `standby_state`. The other defaults come from the
+found registers 124 and 174, which the Apex 300 profile now reports as the
+`standby_flags` word and the state behind the `ctrl_sleep_mode` switch. The other defaults come from the
 same first Apex 300 run, which watched 352 registers in 24 reads per sample over
 one connection held open for the whole run:
 

@@ -7,6 +7,7 @@ from ..fields import (
     NumberField,
     SelectField,
     SwitchField,
+    PulseSwitchField,
     DecimalField,
     VersionField,
     SwapStringField,
@@ -29,21 +30,53 @@ class AP300(BaseDeviceV2):
         super().__init__(
             [
                 DecimalField(FieldName.TIME_REMAINING, 104, 0, 1 / Decimal(60)),
-                # Bench-confirmed on an Apex 300 on 5 Nov: this word is 0x0800
-                # while the station is awake and 0x2800 once it is in standby,
-                # and it went back again when standby was switched off. Only bit
-                # 13 is known to mean standby; the rest of the word is reported
-                # as it reads because the other bits have not been worked out.
+                # Bench-confirmed on an Apex 300 on 5 Nov. Bit 13 is the standby
+                # flag: the word reads 0x0800 awake and 0x2800 in standby, and
+                # it went back again when standby was switched off. The same
+                # word read 0x0802 with the AC inverter on and 0x0806 with AC
+                # and DC on, which puts the inverters on bits 1 and 2; the rest
+                # of the word is reported as it reads rather than decoded.
                 UIntField(FieldName.STANDBY_FLAGS, 124),
                 UIntField(FieldName.DC_OUTPUT_POWER, 140),
                 UIntField(FieldName.AC_OUTPUT_POWER, 142),
                 UIntField(FieldName.DC_INPUT_POWER, 144),
                 UIntField(FieldName.AC_INPUT_POWER, 146),
-                # The other word that tracks standby on the same station: 0
-                # awake, 8 in standby, both directions. Bit 3 is the only bit
-                # that moved, so the word is reported as it reads rather than as
-                # a switch, which would hide what else the station puts in it.
-                UIntField(FieldName.STANDBY_STATE, 174),
+                # The standby switch, on while the station is in standby. The
+                # state is read from 174: an Apex 300 answers 0 while it is
+                # awake and 8 once it is in standby, and it came back the same
+                # way when standby was switched off, in both directions of the
+                # changeover sweep on 5 Nov. Bit 3 is the only bit that moved,
+                # so it is the only bit read.
+                #
+                # The write goes to a different register. 2013 is the word the
+                # official integration writes as SetCtrlPowerOn when its sleep
+                # switch is toggled - 4 to enter sleep and 3 to leave it, after
+                # arming two remote-control settings whose registers it never
+                # names - which an Elite 200 V2 owner traced in the integration's
+                # debug log. The Elite 100 V2 has no sleep switch in its app at
+                # all, so the Apex 300 was asked instead: it answers 0 at 2013
+                # while awake and 2 in standby, but writing 2 both wakes and
+                # sleeps it and the register reads 0 again either way, so 2013 is
+                # a pulse (a power button) rather than a mirror of the state.
+                # Nothing has ever answered a write to 174.
+                #
+                # So either way the switch is thrown it sends the same 2, and
+                # which way the station moves depends on where it already was.
+                # 2013 sits inside the 2005+16 block the profile already reads,
+                # so the pulse register costs no read of its own, and 174 costs
+                # only the read the standby word used to need on its own.
+                #
+                # The verification window is wider than the 3.5s default because
+                # nothing has measured how fast 174 follows the pulse; a shorter
+                # window would report a write that had landed as unconfirmed.
+                PulseSwitchField(
+                    FieldName.CTRL_SLEEP_MODE,
+                    174,
+                    pulse_address=2013,
+                    pulse_value=2,
+                    on_bit=8,
+                    verification_delay=10.0,
+                ),
                 DecimalField(FieldName.AC_INPUT_VOLTAGE, 1314, 1),
                 DecimalField(FieldName.AC_INPUT_CURRENT, 1315, 1),
                 # 1511 mirrors the grid input on this family, the real AC
@@ -58,25 +91,10 @@ class AP300(BaseDeviceV2):
                 # read-back, so the switch is left off this profile.
                 SwitchField(FieldName.CTRL_AC, 2011),
                 SwitchField(FieldName.CTRL_DC, 2012),
-                # 2013 is the word the official integration writes as
-                # SetCtrlPowerOn when its sleep switch is toggled: 4 to enter
-                # sleep, 3 to leave it, after arming remoteSet (1) and
-                # remoteSetSoc (20). An Elite 200 V2 owner reported that write
-                # in the official integration's debug log and traced it to this
-                # register. The Elite 100 V2 has no sleep switch in its app, so
-                # the Apex 300 was asked instead. It answers 0 while awake and 2
-                # in standby, but writing 2 both wakes and sleeps it, and the
-                # register reads 0 again either way, so 2013 behaves like a pulse
-                # (a power button) rather than a mirror of the state. The word is
-                # reported as it reads because neither value is the 0/1 a switch
-                # decodes, and the write range covers the two words the station
-                # has shown plus the 3 and 4 the official integration uses, so
-                # those can be tried from the bench. The awake/standby state
-                # turned out to live elsewhere: registers 124 and 174, both
-                # recorded above, which tools/standby_probe.py found by sweeping
-                # the registers around 2013 and the 100-199 block while standby
-                # was switched by hand mid-run.
-                NumberField(FieldName.CTRL_SLEEP_MODE, 2013, 1, 0, 4, 1),
+                # 2013 is the register the standby switch above pulses. It is
+                # still read, inside the 2005+16 block the profile asks for
+                # anyway, but no field reports it: it answers 0 whichever state
+                # the station is in, so there is nothing there to show.
                 SwitchField(FieldName.CTRL_ECO_DC, 2014),
                 SelectField(FieldName.CTRL_ECO_TIME_MODE_DC, 2015, EcoMode),
                 # The app lets the owner set the DC eco auto-off threshold.

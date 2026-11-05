@@ -2,7 +2,16 @@ import logging
 from typing import Any, List
 
 from ..registers import ReadableRegisters, WriteableRegister
-from ..fields import DeviceField, BoolField, BoolFieldNonZero, SwitchField, SelectField, NumberField, FieldName
+from ..fields import (
+    DeviceField,
+    BoolField,
+    BoolFieldNonZero,
+    SwitchField,
+    PulseSwitchField,
+    SelectField,
+    NumberField,
+    FieldName,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -352,7 +361,13 @@ class BluettiDevice:
         field = next(iter(fields))
 
         # Convert value to an integer if its not already
-        if isinstance(field, SelectField):
+        if isinstance(field, PulseSwitchField):
+            if not field.allowed_write_type(value):
+                return None
+            # The station takes one fixed pulse whichever way it is asked to
+            # move; which way it goes depends on the state it is already in.
+            value = field.pulse_value
+        elif isinstance(field, SelectField):
             option = field.to_option(value)
             if option is None:
                 # Not an option this field can hold.
@@ -365,7 +380,7 @@ class BluettiDevice:
                 return None
             value = int(value)
 
-        return WriteableRegister(field.address, value)
+        return WriteableRegister(field.write_address, value)
 
     def get_bool_fields(self):
         """Returns all bool fields for this device"""

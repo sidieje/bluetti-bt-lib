@@ -42,6 +42,9 @@ from bluetti_bt_lib.registers.ReadableRegisters import ReadableRegisters
 from bluetti_bt_lib.utils.device_builder import build_device
 
 DEFAULT_RANGE = "2000-2100"
+# Bump when the script changes: raw.githubusercontent.com can hand back a cached
+# copy, and the header line is the only way to tell which copy actually ran.
+PROBE_REVISION = "2026-07-29.2"
 
 
 def parse_range(text: str) -> tuple[int, int]:
@@ -202,7 +205,10 @@ async def run(
 
 
 async def main() -> None:
-    parser = argparse.ArgumentParser()
+    parser = argparse.ArgumentParser(
+        description="watch which registers move when a ctrl_sleep_mode pulse goes out"
+        " [probe " + PROBE_REVISION + "]",
+    )
     parser.add_argument("-m", "--mac", required=True)
     parser.add_argument("-t", "--type", required=True)
     parser.add_argument("-e", "--enc", action="store_true", help="station needs encryption")
@@ -252,6 +258,7 @@ async def main() -> None:
         + ", ".join(str(start) + "-" + str(end) for start, end in ranges)
         + " (" + str(total) + " words in " + str(len(requests))
         + " reads of at most " + str(size) + ")"
+        + " [probe " + PROBE_REVISION + "]"
     )
     if args.pulse_at and not any(f.name == "ctrl_sleep_mode" for f in device.fields):
         print("this profile has no ctrl_sleep_mode field, so --pulse-at cannot write it")
@@ -274,6 +281,11 @@ async def main() -> None:
         connected = await reader.connect()
     if not connected:
         print("unable to connect")
+        print(
+            "wake the station first (bluetti-read -m " + args.mac
+            + " -t " + args.type + " -e 1), then re-run; if the header above does"
+            " not say [probe " + PROBE_REVISION + "] this is a cached copy of the script"
+        )
         return
 
     try:

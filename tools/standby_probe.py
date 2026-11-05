@@ -35,8 +35,6 @@ import struct
 import time
 from collections import Counter
 
-from bleak import BleakClient
-
 from bluetti_bt_lib.base_devices.bluetti_device import BluettiDevice
 from bluetti_bt_lib.bluetooth import DeviceWriter, DeviceWriterConfig
 from bluetti_bt_lib.bluetooth.device_reader import DeviceReader, DeviceReaderConfig
@@ -108,6 +106,12 @@ async def read_once(
 
 async def pulse(reader: DeviceReader, device: BluettiDevice, value: int) -> None:
     """Write ctrl_sleep_mode over the connection the reader already holds."""
+    if reader.client is None or not reader.client.is_connected:
+        # The link belongs to the reader, and a station that slept may have
+        # dropped it. Writing over a dead client would only raise inside bleak.
+        print("  pulse: skipped, no live connection to write over")
+        return
+
     writer = DeviceWriter(
         reader.client,
         device,
@@ -253,17 +257,22 @@ async def main() -> None:
         print("this profile has no ctrl_sleep_mode field, so --pulse-at cannot write it")
         return
 
-    client = BleakClient(args.mac)
+    # Let the reader own the link: it scans for the address, retries the
+    # connection, and rebuilds it when a sleeping station drops it. Handing the
+    # reader a BleakClient of our own would leave it unconnected, because the
+    # reader only subscribes on a client its caller has already connected.
     reader = DeviceReader(
         args.mac,
         device,
         asyncio.Future,
         DeviceReaderConfig(use_encryption=args.enc),
-        ble_client=client,
     )
     reader.logger.setLevel(logging.DEBUG if args.verbose else logging.WARNING)
 
-    if not await reader.connect():
+    # connect() expects the polling lock, the same way read() takes it.
+    async with reader.polling_lock:
+        connected = await reader.connect()
+    if not connected:
         print("unable to connect")
         return
 

@@ -21,6 +21,15 @@ class DeviceField:
     def parse(self, data: bytes) -> Any:
         raise NotImplementedError
 
+    @property
+    def write_address(self) -> int:
+        """The register a write to this field goes to.
+
+        For every field but a pulse control this is the register the field is
+        read from; see PulseSwitchField, where the two are different words.
+        """
+        return self.address
+
     def is_writeable(self) -> bool:
         return False
 

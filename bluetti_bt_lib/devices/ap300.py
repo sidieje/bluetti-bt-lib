@@ -52,12 +52,12 @@ class AP300(BaseDeviceV2):
                 # sleep, 3 to leave it, after arming remoteSet (1) and
                 # remoteSetSoc (20). An Elite 200 V2 owner reported that write
                 # in the official integration's debug log and traced it to this
-                # register; nothing here has read or written it yet. The Elite
-                # 100 V2 has no sleep switch in its app, so the Apex 300 is the
-                # unit to ask. Reported as the raw word, because 3 and 4 are not
-                # the 0/1 a switch field decodes, and read only, because a write
-                # that means standby could drop the connection it came in on.
-                UIntField(FieldName.CTRL_SLEEP_MODE, 2013),
+                # register. The Elite 100 V2 has no sleep switch in its app, so
+                # the Apex 300 was asked instead and answers in its own
+                # encoding: 0 while awake, 2 in standby. That is why the word is
+                # reported as it reads rather than decoded as a switch, and why
+                # the write is capped at the two words the station has shown.
+                NumberField(FieldName.CTRL_SLEEP_MODE, 2013, 1, 0, 2, 1),
                 SwitchField(FieldName.CTRL_ECO_DC, 2014),
                 SelectField(FieldName.CTRL_ECO_TIME_MODE_DC, 2015, EcoMode),
                 # The app lets the owner set the DC eco auto-off threshold.

@@ -139,12 +139,13 @@ The Apex 300 reports register 2013 as `ctrl_sleep_mode`, the word the official
 integration writes when its sleep switch is toggled: an Elite 200 V2 owner saw
 `SetCtrlPowerOn` go out as 4 to enter sleep and 3 to leave it, after the
 integration had armed two remote-control settings whose registers it never
-names. The official integration does not say which register it writes, so this
-one is the deduction of an owner rather than a confirmed mapping, and the Elite
-100 V2 has no sleep switch in its app at all, so the Apex 300 is the portable
-that can answer it. It is exposed read only and reported as the raw word,
-because 3 and 4 are not the 0/1 a switch decodes; a station that has never been
-put to sleep is expected to report something else.
+names. The official integration does not say which register it writes, so that
+mapping belongs to an owner rather than to the integration, and the Elite 100
+V2 has no sleep switch in its app at all, so the Apex 300 is the portable that
+could be asked. It answers in its own encoding: 0 while awake and 2 in
+standby. The word is reported as it reads, because neither value is the 0/1 a
+switch decodes, and the write is capped at 0 and 2 because nothing else has
+ever come back from a station.
 
 ## Installation
 

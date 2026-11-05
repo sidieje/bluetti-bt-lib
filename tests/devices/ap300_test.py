@@ -35,21 +35,30 @@ class TestAP300(unittest.TestCase):
         self.assertEqual(reference - ap300, {EL100V2_ONLY_DIFFERENCE})
         self.assertEqual(ap300 - reference, {AP300_ONLY_PROBE})
 
-    def test_standby_register_2013_reads_raw_and_stays_unwritten(self):
-        # The official integration writes this register as SetCtrlPowerOn when
-        # its sleep switch is toggled: 4 to enter sleep, 3 to leave it. The read
-        # is what has to be checked first, so the word is reported as it reads
-        # and nothing offers a write for it.
+    def test_standby_register_2013_keeps_the_word_and_writes_only_what_the_station_shows(self):
+        # An owner's Apex 300 reads 0 at 2013 while awake and 2 in standby, so
+        # the word is reported as it reads: a switch field would turn both into
+        # a plain on/off and lose which state the station is actually in.
         field = next(f for f in AP300().fields if f.name == "ctrl_sleep_mode")
         self.assertEqual(field.address, 2013)
-        self.assertFalse(field.is_writeable())
-        self.assertIsNone(AP300().build_write_command("ctrl_sleep_mode", 4))
+        self.assertTrue(field.is_writeable())
 
-        # 3 and 4 are the two values the official integration writes. A switch
-        # field would leave both unparsed, which is why this one is a uint.
-        for value in (0, 1, 3, 4):
+        for value in (0, 1, 2):
             with self.subTest(value=value):
                 self.assertEqual(field.parse(struct.pack("!H", value)), value)
+
+        device = AP300()
+        for value in (0, 2):
+            with self.subTest(value=value):
+                command = device.build_write_command("ctrl_sleep_mode", value)
+                self.assertEqual((command.address, command.value), (2013, value))
+
+        # The station has never shown anything but 0 and 2, so nothing else is
+        # offered: not the 3 and 4 the official integration writes to an Elite
+        # 200 V2, and not the True/False a switch would send.
+        for value in (-1, 3, 4, 65535, True, "0"):
+            with self.subTest(value=value):
+                self.assertIsNone(device.build_write_command("ctrl_sleep_mode", value))
 
     def test_standby_register_adds_no_poll_request(self):
         # 2013 sits inside the 2005+16 block the profile already asks for, so

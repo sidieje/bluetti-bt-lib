@@ -7,6 +7,7 @@ from ..fields import (
     NumberField,
     SelectField,
     SwitchField,
+    PulseSwitchField,
     DecimalField,
     VersionField,
     SwapStringField,
@@ -23,6 +24,26 @@ class EL200V2(BaseDeviceV2):
                 UIntField(FieldName.AC_OUTPUT_POWER, 142),
                 UIntField(FieldName.DC_INPUT_POWER, 144),
                 UIntField(FieldName.AC_INPUT_POWER, 146),
+                # The standby switch, on while the station is in standby. This
+                # is the model the control was first seen on: an Elite 200 V2
+                # owner watched the official integration's sleep switch write 4
+                # to 2013 to enter sleep and 3 to leave it. The write here is
+                # the 2 that an Apex 300 answers, because that is the pulse that
+                # was watched moving the state on real hardware, and it moves
+                # the station whichever way it is asked.
+                #
+                # The state word is the Apex 300's: 0 awake, 8 in standby. It
+                # has not been read on an Elite 200 V2, so the state this switch
+                # shows on this model is taken from the other portable until a
+                # sweep on one says otherwise.
+                PulseSwitchField(
+                    FieldName.CTRL_SLEEP_MODE,
+                    174,
+                    pulse_address=2013,
+                    pulse_value=2,
+                    on_bit=8,
+                    verification_delay=10.0,
+                ),
                 DecimalField(FieldName.AC_INPUT_VOLTAGE, 1314, 1),
                 DecimalField(FieldName.AC_INPUT_CURRENT, 1315, 1),
                 # 1511 mirrors the grid input on this family, the real AC

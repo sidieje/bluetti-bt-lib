@@ -17,12 +17,11 @@ WIDENED = {
     "AC500": [(36, 8), (70, 11), (86, 11), (3001, 16), (3061, 1)],
     "EP500": [(36, 8), (70, 11), (86, 3), (3001, 16), (3061, 1)],
     "EP500P": [(36, 8), (70, 11), (86, 3), (3001, 16), (3061, 1)],
-    # The Apex 300 also reads the two words that hold its standby state, 124 and
-    # 174. Both sit outside every block this profile otherwise asks for, and the
-    # 5 Nov sweep answered both in every sample it took.
+    # The Apex 300 also reads the word its standby switch reports its state
+    # from, 174. It sits outside every block this profile otherwise asks for,
+    # and the 5 Nov sweep answered it in every sample it took.
     "AP300": [
         (102, 3),
-        (124, 1),
         (140, 7),
         (174, 1),
         (1314, 2),

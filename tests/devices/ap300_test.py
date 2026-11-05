@@ -10,14 +10,12 @@ from bluetti_bt_lib.devices import AP300, EL100V2, EL100mini, EL200V2, EL300
 # EL100 V2, so the register is right and the model is the exception.
 GRID_CHARGE_SWITCH = "ctrl_grid_charge_on"
 EL100V2_ONLY_DIFFERENCE = (GRID_CHARGE_SWITCH, 2008, 1)
-# The standby switch reads its state from 174 and pulses 2 to 2013, and the flag
-# word at 124 carries the same state along with other bits. Both belong to the
-# Apex 300 alone: an Elite 200 V2 owner traced the official integration's sleep
-# switch to 2013, but the Elite 100 V2 has no sleep switch in its app, so this is
-# the unit that could answer it.
+# The standby switch reads its state from 174 and pulses 2 to 2013. It belongs
+# to the Apex 300 alone among the portables: an Elite 200 V2 owner traced the
+# official integration's sleep switch to 2013, but the Elite 100 V2 has no sleep
+# switch in its app, so the Apex 300 is the unit that could be asked.
 SLEEP_SWITCH = ("ctrl_sleep_mode", 174, 1)
-STANDBY_WORDS = {("standby_flags", 124, 1)}
-AP300_ONLY_REGISTERS = {SLEEP_SWITCH} | STANDBY_WORDS
+AP300_ONLY_REGISTERS = {SLEEP_SWITCH}
 
 
 def _layout(device_cls):
@@ -84,36 +82,31 @@ class TestAP300(unittest.TestCase):
         self.assertNotIn("ctrl_sleep_mode", sensors)
         self.assertNotIn("standby_state", sensors)
 
-    def test_standby_flags_report_what_the_station_shows(self):
-        # Sweeping the registers around 2013 and the 100-199 block while standby
-        # was switched by hand in the middle of a run (tools/standby_probe.py
-        # --switch) left 124 at 0x0800 awake and 0x2800 in standby, and back
-        # again when standby was switched off. It stays a plain read-only word,
-        # because the other bits it carries are only partly understood: the same
-        # word read 0x0802 with the AC inverter on and 0x0806 with the AC and DC
-        # inverters on, which is why the standby bit is not decoded into a
-        # boolean of its own.
+    def test_the_flag_word_at_124_is_left_off_the_profile(self):
+        # The sweep that found 174 also found 124: 0x0800 awake, 0x2800 in
+        # standby, and back again when standby was switched off. It is not
+        # reported, because the word answers for more than the standby state -
+        # it read 0x0802 with the AC inverter on and 0x0806 with the AC and DC
+        # inverters on - so it stays off the profile rather than being decoded
+        # bit by bit.
         device = AP300()
-        field = next(f for f in device.fields if f.name == "standby_flags")
-        self.assertEqual(field.address, 124)
-        self.assertFalse(field.is_writeable())
-        for word in (0x0800, 0x2800, 0x0802, 0x0806):
-            with self.subTest(word=hex(word)):
-                self.assertEqual(field.parse(struct.pack("!H", word)), word)
-        self.assertIsNone(device.build_write_command("standby_flags", 0x2800))
+        self.assertNotIn("standby_flags", [f.name for f in device.fields])
+        for block in device.get_polling_registers():
+            with self.subTest(block=block.starting_address):
+                end = block.starting_address + block.quantity
+                self.assertFalse(block.starting_address <= 124 < end)
 
-    def test_the_standby_words_cost_one_read_each(self):
-        # 124 sits 20 above the 102+3 block and 174, the switch's state word,
-        # sits 28 above 140+7, both past the gap this station merges, so each
-        # adds a request of its own. The 2013 the switch writes to is already
-        # inside the 2005+16 block, so the control costs nothing extra.
+    def test_the_switch_costs_one_read_and_2013_costs_none(self):
+        # 174, the switch's state word, sits 28 above the 140+7 block, past the
+        # gap this station merges, so it adds a request of its own. The 2013 the
+        # switch pulses is already inside the 2005+16 block, so the control
+        # itself needs no read at all.
         blocks = [
             (r.starting_address, r.quantity) for r in AP300().get_polling_registers()
         ]
-        self.assertIn((124, 1), blocks)
         self.assertIn((174, 1), blocks)
         self.assertIn((2005, 16), blocks)
-        self.assertEqual(len(blocks), 9)
+        self.assertEqual(len(blocks), 8)
 
     def test_the_other_elite_portables_keep_the_switch(self):
         # The exclusion belongs to the Apex 300 alone; the Elite portables are

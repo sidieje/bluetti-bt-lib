@@ -30,13 +30,6 @@ class AP300(BaseDeviceV2):
         super().__init__(
             [
                 DecimalField(FieldName.TIME_REMAINING, 104, 0, 1 / Decimal(60)),
-                # Bench-confirmed on an Apex 300 on 5 Nov. Bit 13 is the standby
-                # flag: the word reads 0x0800 awake and 0x2800 in standby, and
-                # it went back again when standby was switched off. The same
-                # word read 0x0802 with the AC inverter on and 0x0806 with AC
-                # and DC on, which puts the inverters on bits 1 and 2; the rest
-                # of the word is reported as it reads rather than decoded.
-                UIntField(FieldName.STANDBY_FLAGS, 124),
                 UIntField(FieldName.DC_OUTPUT_POWER, 140),
                 UIntField(FieldName.AC_OUTPUT_POWER, 142),
                 UIntField(FieldName.DC_INPUT_POWER, 144),
@@ -47,6 +40,11 @@ class AP300(BaseDeviceV2):
                 # way when standby was switched off, in both directions of the
                 # changeover sweep on 5 Nov. Bit 3 is the only bit that moved,
                 # so it is the only bit read.
+                #
+                # Register 124 tracks standby as well (0x0800 awake, 0x2800 in
+                # standby), but the same word read 0x0802 with the AC inverter
+                # on and 0x0806 with AC and DC on, so it answers for more than
+                # the standby state and is left off the profile.
                 #
                 # The write goes to a different register. 2013 is the word the
                 # official integration writes as SetCtrlPowerOn when its sleep

@@ -80,30 +80,35 @@ row and credit the owner.
 - EL300 — [@suiciety](https://github.com/suiciety)
 - Handsfree 2 — [@pablogiaccaglia](https://github.com/pablogiaccaglia)
 
-|Device Name|ctrl_ac|ctrl_dc|ctrl_ups_mode|soc_range_start|soc_range_end|ctrl_eco_min_power|
-|-----------|-------|-------|-------------|---------------|---------------|------------------|
-|AC200L     |✅     |✅     |✅           |✅             |✅             |❌                |
-|AC200M     |✅     |✅     |❌           |❌             |❌             |❌                |
-|AC200PL    |✅     |✅     |❌           |❌             |❌             |❌                |
-|AC300      |✅     |✅     |✅           |✅             |✅             |❌                |
-|AC500      |✅     |✅     |✅           |✅             |✅             |❌                |
-|AC50P      |✅     |✅     |❌           |❌             |❌             |❌                |
-|AP300      |✅     |✅     |✅           |✅             |✅             |✅                |
-|EB3A       |✅     |✅     |❌           |❌             |❌             |❌                |
-|EL10       |✅     |✅     |❌           |❌             |❌             |✅                |
-|EL100mini  |✅     |✅     |✅           |✅             |✅             |✅                |
-|EL100V2    |✅     |✅     |✅           |✅             |✅             |✅                |
-|Elite 200 V2|✅    |✅     |✅           |✅             |✅             |✅                |
-|EL30V2     |✅     |✅     |✅           |✅             |✅             |✅                |
-|EL300      |✅     |✅     |✅           |✅             |✅             |✅                |
-|EP500      |✅     |✅     |✅           |✅             |✅             |❌                |
-|EP500P     |✅     |✅     |✅           |✅             |✅             |❌                |
-|EP600      |✅     |❌     |❌           |✅             |✅             |❌                |
-|FP (FridgePower)|✅  |✅     |✅           |❌             |❌             |❌                |
-|Handsfree 1|✅     |✅     |❌           |❌             |❌             |❌                |
-|Handsfree 2|✅     |✅     |❌           |❌             |❌             |❌                |
+|Device Name|ctrl_ac|ctrl_dc|ctrl_ups_mode|soc_range_start|soc_range_end|ctrl_eco_min_power|ctrl_sleep_mode|
+|-----------|-------|-------|-------------|---------------|---------------|------------------|---------------|
+|AC200L     |✅     |✅     |✅           |✅             |✅             |❌                |❌             |
+|AC200M     |✅     |✅     |❌           |❌             |❌             |❌                |❌             |
+|AC200PL    |✅     |✅     |❌           |❌             |❌             |❌                |❌             |
+|AC300      |✅     |✅     |✅           |✅             |✅             |❌                |❌             |
+|AC500      |✅     |✅     |✅           |✅             |✅             |❌                |❌             |
+|AC50P      |✅     |✅     |❌           |❌             |❌             |❌                |❌             |
+|AP300      |✅     |✅     |✅           |✅             |✅             |✅                |✅             |
+|EB3A       |✅     |✅     |❌           |❌             |❌             |❌                |❌             |
+|EL10       |✅     |✅     |❌           |❌             |❌             |✅                |❌             |
+|EL100mini  |✅     |✅     |✅           |✅             |✅             |✅                |❌             |
+|EL100V2    |✅     |✅     |✅           |✅             |✅             |✅                |❌             |
+|Elite 200 V2|✅    |✅     |✅           |✅             |✅             |✅                |✅             |
+|EL30V2     |✅     |✅     |✅           |✅             |✅             |✅                |❌             |
+|EL300      |✅     |✅     |✅           |✅             |✅             |✅                |❌             |
+|EP500      |✅     |✅     |✅           |✅             |✅             |❌                |❌             |
+|EP500P     |✅     |✅     |✅           |✅             |✅             |❌                |❌             |
+|EP600      |✅     |❌     |❌           |✅             |✅             |❌                |❌             |
+|FP (FridgePower)|✅  |✅     |✅           |❌             |❌             |❌                |❌             |
+|Handsfree 1|✅     |✅     |❌           |❌             |❌             |❌                |❌             |
+|Handsfree 2|✅     |✅     |❌           |❌             |❌             |❌                |❌             |
 
 The AC200M, AC200PL, EP500 and EP500P rows come from their register maps, but their controls have not been tested through this library yet.
+
+The standby switch is the one control whose state and command are different
+words: it reads 174 and pulses 2 to 2013. Only the two profiles that were
+traced through it carry it, and the state word has only been read on an Apex
+300.
 
 The eco auto-off thresholds (registers 2016 and 2019) are readable on most
 Elite portables, but they are only writable where an owner has confirmed the
@@ -135,9 +140,10 @@ pulse mode with reverse charging off has never been read from a station
 either. They are named `ctrl_*` regardless, so the entity names do not change
 when the write side lands.
 
-The Apex 300 has a `ctrl_sleep_mode` switch for its standby. Register 2013 is
-the word the official integration writes when its sleep switch is toggled: an
-Elite 200 V2 owner saw `SetCtrlPowerOn` go out as 4 to enter sleep and 3 to
+The Apex 300 and the Elite 200 V2 have a `ctrl_sleep_mode` switch for their
+standby. Register 2013 is the word the official integration writes when its
+sleep switch is toggled: an Elite 200 V2 owner saw `SetCtrlPowerOn` go out as 4
+to enter sleep and 3 to
 leave it, after the integration had armed two remote-control settings whose
 registers it never names. The official integration does not say which register
 it writes, so that mapping belongs to an owner rather than to the integration,
@@ -148,17 +154,20 @@ either way, so 2013 behaves like a pulse (a power button) rather than a mirror
 of the state. Sweeping the registers around 2013 and the 100-199 block while
 standby was switched by hand in the middle of a run (`tools/standby_probe.py
 --switch`) found the state itself: register 174 reads 0 while the station is
-awake and 8 in standby, and register 124 reads 0x0800 awake and 0x2800 in
-standby. Both flipped the same way in the run that switched standby on and the
+awake and 8 in standby. It flipped the same way in the run that switched
+standby on and the
 run that switched it back off on 5 Nov. The switch therefore reads whether it is
 on from 174, by the standby bit, and always writes 2 to 2013 whichever way it is
 asked: on means standby. 2013 is still read inside the 2005+16 block the profile
-polls, but no field reports it now that the switch only writes it. Register 124
-stays a plain read-only word called `standby_flags`, because it carries other
-state beside standby: the same word read 0x0802 with the AC inverter on and
-0x0806 with the AC and DC inverters on, so only bit 13 is known to be standby.
-Register 2003 changed in every sample as well, but it climbs and then resets, so
-it is a counter rather than a state. Nothing has measured how long 174 takes to
+polls, but no field reports it now that the switch only writes it. The word at
+124 tracks standby too - 0x0800 awake, 0x2800 in standby - but the same word
+read 0x0802 with the AC inverter on and 0x0806 with the AC and DC inverters on,
+so it answers for more than the standby state and is not reported. Register 2003
+changed in every sample as well, but it climbs and then resets, so it is a
+counter rather than a state. The Elite 200 V2 carries the same switch because
+the control was traced on that model, but 174 has only ever been read on an Apex
+300, so the state it shows on an Elite 200 V2 is taken from the other portable
+until a sweep on one says otherwise. Nothing has measured how long 174 takes to
 follow the pulse, so a write waits 10 s for it before being reported
 unverified; a station that moves sooner is reported as soon as it is seen.
 
@@ -430,8 +439,9 @@ at full speed, so it is worth asking for whenever `--range` covers ground nobody
 has read before. The first changeover run on 5 Nov compared 34 words across
 `2005-2038` and found nothing moving between standby on and standby off, so the
 next sweep looked wider: `--range 100-199 --range 1300-1450 --range 2000-2100`
-found registers 124 and 174, which the Apex 300 profile now reports as the
-`standby_flags` word and the state behind the `ctrl_sleep_mode` switch. The other defaults come from the
+found registers 124 and 174. 174 is the state the `ctrl_sleep_mode` switch
+reports on the Apex 300 and the Elite 200 V2; 124 is left off the profiles
+because it carries the inverter bits as well. The other defaults come from the
 same first Apex 300 run, which watched 352 registers in 24 reads per sample over
 one connection held open for the whole run:
 

@@ -29,10 +29,21 @@ class AP300(BaseDeviceV2):
         super().__init__(
             [
                 DecimalField(FieldName.TIME_REMAINING, 104, 0, 1 / Decimal(60)),
+                # Bench-confirmed on an Apex 300 on 5 Nov: this word is 0x0800
+                # while the station is awake and 0x2800 once it is in standby,
+                # and it went back again when standby was switched off. Only bit
+                # 13 is known to mean standby; the rest of the word is reported
+                # as it reads because the other bits have not been worked out.
+                UIntField(FieldName.STANDBY_FLAGS, 124),
                 UIntField(FieldName.DC_OUTPUT_POWER, 140),
                 UIntField(FieldName.AC_OUTPUT_POWER, 142),
                 UIntField(FieldName.DC_INPUT_POWER, 144),
                 UIntField(FieldName.AC_INPUT_POWER, 146),
+                # The other word that tracks standby on the same station: 0
+                # awake, 8 in standby, both directions. Bit 3 is the only bit
+                # that moved, so the word is reported as it reads rather than as
+                # a switch, which would hide what else the station puts in it.
+                UIntField(FieldName.STANDBY_STATE, 174),
                 DecimalField(FieldName.AC_INPUT_VOLTAGE, 1314, 1),
                 DecimalField(FieldName.AC_INPUT_CURRENT, 1315, 1),
                 # 1511 mirrors the grid input on this family, the real AC
@@ -60,11 +71,11 @@ class AP300(BaseDeviceV2):
                 # reported as it reads because neither value is the 0/1 a switch
                 # decodes, and the write range covers the two words the station
                 # has shown plus the 3 and 4 the official integration uses, so
-                # those can be tried from the bench. Which register holds the
-                # awake/standby state is still open; tools/standby_probe.py
-                # watches the neighbouring registers for it, and polls them
-                # through a link it closes between samples, because watching
-                # over one open connection kept the station awake.
+                # those can be tried from the bench. The awake/standby state
+                # turned out to live elsewhere: registers 124 and 174, both
+                # recorded above, which tools/standby_probe.py found by sweeping
+                # the registers around 2013 and the 100-199 block while standby
+                # was switched by hand mid-run.
                 NumberField(FieldName.CTRL_SLEEP_MODE, 2013, 1, 0, 4, 1),
                 SwitchField(FieldName.CTRL_ECO_DC, 2014),
                 SelectField(FieldName.CTRL_ECO_TIME_MODE_DC, 2015, EcoMode),

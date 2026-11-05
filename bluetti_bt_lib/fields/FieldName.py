@@ -108,6 +108,8 @@ class FieldName(Enum):
     SM_P3_CURRENT = "sm_p3_current"
     SM_P3_POWER = "sm_p3_power"
     SM_P3_VOLTAGE = "sm_p3_voltage"
+    STANDBY_FLAGS = "standby_flags"
+    STANDBY_STATE = "standby_state"
     TIME_REMAINING = "time_remaining"
     VER_ARM = "version_arm"
     VER_BMS = "version_bms"

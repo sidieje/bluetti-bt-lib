@@ -147,9 +147,16 @@ wakes and sleeps it and the register reads 0 again either way, so 2013 behaves
 like a pulse (a power button) rather than a mirror of the state. The word is
 reported as it reads, because neither value is the 0/1 a switch decodes, and
 the write range covers 0-4: the two words the station has shown plus the 3 and
-4 the official integration uses. Which register holds the awake/standby state
-is still open, so `tools/standby_probe.py` watches a block of registers and
-reports the ones that move when the pulse goes out.
+4 the official integration uses. Two other words do hold the state, found by
+sweeping the registers around 2013 and the 100-199 block while standby was
+switched by hand in the middle of a run (`tools/standby_probe.py --switch`):
+register 174 reads 0 while the station is awake and 8 in standby, and register
+124 reads 0x0800 awake and 0x2800 in standby. Both flipped the same way in the
+run that switched standby on and the run that switched it back off on 5 Nov, so
+they are reported as `standby_state` and `standby_flags` respectively, as plain
+words: only the one bit that moved in each is known, and the other bits have not
+been worked out. Register 2003 changed in every sample as well, but it climbs
+and then resets, so it is a counter rather than a state.
 
 ## Installation
 
@@ -418,7 +425,9 @@ sampling starts, which costs a timeout per dead address but leaves every sample
 at full speed, so it is worth asking for whenever `--range` covers ground nobody
 has read before. The first changeover run on 5 Nov compared 34 words across
 `2005-2038` and found nothing moving between standby on and standby off, so the
-next sweep has to look wider than the control block. The other defaults come from the
+next sweep looked wider: `--range 100-199 --range 1300-1450 --range 2000-2100`
+found registers 124 and 174, which the Apex 300 profile now reports as
+`standby_flags` and `standby_state`. The other defaults come from the
 same first Apex 300 run, which watched 352 registers in 24 reads per sample over
 one connection held open for the whole run:
 

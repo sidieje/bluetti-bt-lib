@@ -10,10 +10,16 @@ from bluetti_bt_lib.devices import AP300, EL100V2, EL100mini, EL200V2, EL300
 # EL100 V2, so the register is right and the model is the exception.
 GRID_CHARGE_SWITCH = "ctrl_grid_charge_on"
 EL100V2_ONLY_DIFFERENCE = (GRID_CHARGE_SWITCH, 2008, 1)
-# The 2013 standby register is being read on the Apex 300 alone. An Elite 200 V2
-# owner traced the official integration's sleep switch to it, but the Elite 100
-# V2 has no sleep switch in its app, so this is the unit that can answer it.
+# The 2013 standby register and the two words that hold the standby state are
+# read on the Apex 300 alone. An Elite 200 V2 owner traced the official
+# integration's sleep switch to 2013, but the Elite 100 V2 has no sleep switch in
+# its app, so this is the unit that could answer it.
 AP300_ONLY_PROBE = ("ctrl_sleep_mode", 2013, 1)
+STANDBY_WORDS = {
+    ("standby_flags", 124, 1),
+    ("standby_state", 174, 1),
+}
+AP300_ONLY_REGISTERS = {AP300_ONLY_PROBE} | STANDBY_WORDS
 
 
 def _layout(device_cls):
@@ -33,7 +39,7 @@ class TestAP300(unittest.TestCase):
         ap300 = set(_layout(AP300))
 
         self.assertEqual(reference - ap300, {EL100V2_ONLY_DIFFERENCE})
-        self.assertEqual(ap300 - reference, {AP300_ONLY_PROBE})
+        self.assertEqual(ap300 - reference, AP300_ONLY_REGISTERS)
 
     def test_standby_register_2013_keeps_the_word_and_writes_a_pulse(self):
         # An owner's Apex 300 reads 0 at 2013 while awake and 2 in standby, so
@@ -68,7 +74,38 @@ class TestAP300(unittest.TestCase):
             (r.starting_address, r.quantity) for r in AP300().get_polling_registers()
         ]
         self.assertIn((2005, 16), blocks)
-        self.assertEqual(len(blocks), 7)
+
+    def test_standby_words_report_what_the_station_shows(self):
+        # Sweeping the registers around 2013 and the 100-199 block while standby
+        # was switched by hand in the middle of a run (tools/standby_probe.py
+        # --switch) left two words whose values never overlapped between the two
+        # halves, in both directions: 124 went 0x0800 -> 0x2800 and 174 went
+        # 0 -> 8 going into standby, and both came back when standby was
+        # switched off again. They stay plain read-only words, because only the
+        # one bit that moved in each has been worked out.
+        device = AP300()
+        for name, address, awake, asleep in (
+            ("standby_flags", 124, 0x0800, 0x2800),
+            ("standby_state", 174, 0, 8),
+        ):
+            with self.subTest(name=name):
+                field = next(f for f in device.fields if f.name == name)
+                self.assertEqual(field.address, address)
+                self.assertFalse(field.is_writeable())
+                self.assertEqual(field.parse(struct.pack("!H", awake)), awake)
+                self.assertEqual(field.parse(struct.pack("!H", asleep)), asleep)
+                self.assertIsNone(device.build_write_command(name, asleep))
+
+    def test_standby_words_cost_one_read_each(self):
+        # 124 and 174 sit outside every block the profile already asks for: 124
+        # is 20 above the 102+3 block and 174 is 28 above 140+7, both past the
+        # gap this station merges, so each adds a request of its own.
+        blocks = [
+            (r.starting_address, r.quantity) for r in AP300().get_polling_registers()
+        ]
+        self.assertIn((124, 1), blocks)
+        self.assertIn((174, 1), blocks)
+        self.assertEqual(len(blocks), 9)
 
     def test_the_other_elite_portables_keep_the_switch(self):
         # The exclusion belongs to the Apex 300 alone; the Elite portables are

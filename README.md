@@ -379,7 +379,8 @@ usage: standby_probe.py [-h] [-m MAC] [-t TYPE] [-e] [--range RANGES]
                         [--watch WATCH] [-n SAMPLES] [--gap GAP]
                         [--link {duty,hold}] [--pulse-at PULSE_AT]
                         [--pulse-value PULSE_VALUE] [--chunk CHUNK]
-                        [--dump FILE] [--note NOTE] [--compare FILE_A FILE_B]
+                        [--scout] [--dump FILE] [--note NOTE]
+                        [--compare FILE_A FILE_B]
                         [--group FILE] [--ask] [--switch]
                         [--switch-text SWITCH_TEXT] [--settle SETTLE] [-v]
 ```
@@ -411,7 +412,13 @@ in between. Starting from the reads the profile already issues is not caution fo
 its own sake: a read starting at 1998 was ignored outright on 5 Nov, and one
 unanswered read ends the cycle, so nothing after it was asked and the run compared
 nothing. A read the station will not answer is therefore dropped once it has
-failed, and the sweep carries on with the rest. The other defaults come from the
+failed, and the sweep carries on with the rest. `--scout` finds those dead
+addresses up front instead: it asks each read in its own cycle once before the
+sampling starts, which costs a timeout per dead address but leaves every sample
+at full speed, so it is worth asking for whenever `--range` covers ground nobody
+has read before. The first changeover run on 5 Nov compared 34 words across
+`2005-2038` and found nothing moving between standby on and standby off, so the
+next sweep has to look wider than the control block. The other defaults come from the
 same first Apex 300 run, which watched 352 registers in 24 reads per sample over
 one connection held open for the whole run:
 

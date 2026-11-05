@@ -17,7 +17,9 @@ and reaches --span registers above it, and it closes the link between samples
 5 Nov an Apex 300 ignored a read starting at 1998 outright, and one unanswered
 read ends the cycle, so nothing after it was asked and the run compared nothing.
 A read the station will not answer is therefore dropped once it has failed, and
-the sweep keeps going with the rest. Duty-cycling matters for the same kind of
+the sweep keeps going with the rest. Use --scout to find those dead addresses up
+front: it asks each read in its own cycle once, which costs a timeout per dead
+address but leaves the samples themselves running at full speed. Duty-cycling matters for the same kind of
 reason: on 5 Nov an AP300 held 2013 at 0 for a whole run of a probe that kept one
 connection open and sent 24 reads per sample. A station read that continuously is
 being kept awake by the poll, so it never cycles into standby and there is no
@@ -73,7 +75,7 @@ from bluetti_bt_lib.utils.device_builder import build_device
 
 # Bump when the script changes: raw.githubusercontent.com can hand back a cached
 # copy, and the header line is the only way to tell which copy actually ran.
-PROBE_REVISION = "2026-11-05.5"
+PROBE_REVISION = "2026-11-05.6"
 
 # The narrowest read worth issuing when walking the chunk widths down.
 MIN_CHUNK = 8
@@ -430,6 +432,42 @@ async def pulse(reader: DeviceReader, device: BluettiDevice, value: int) -> None
     )
 
 
+async def scout(
+    reader: DeviceReader, requests: list[ReadableRegisters]
+) -> list[ReadableRegisters]:
+    """Ask every read on its own once, and keep only the ones that answered.
+
+    A read this station ignores would cut the cycle at the same place in every
+    sample, and a run only uncovers one dead address per sample. One read per
+    cycle costs a timeout for each dead address but finds them all up front, so
+    the samples themselves can run at full speed.
+    """
+    print("        scouting " + str(len(requests)) + " reads one at a time")
+    live: list[ReadableRegisters] = []
+    ignored = 0
+    for request in requests:
+        found, _silent, _aborted, _request = await read_once(reader, [request])
+        if found:
+            live.append(request)
+            continue
+        ignored += 1
+        print(
+            "        no answer from "
+            + str(request.starting_address)
+            + " + "
+            + str(request.quantity)
+        )
+    if ignored:
+        print(
+            "        "
+            + str(ignored)
+            + " read(s) ignored, sampling the "
+            + str(len(live))
+            + " that answered"
+        )
+    return live
+
+
 async def run(
     reader: DeviceReader,
     device: BluettiDevice,
@@ -445,6 +483,23 @@ async def run(
     strikes: Counter[int] = Counter()
     snapshots: list[dict] = []
     meta = dump_meta(args, requests)
+
+    if args.scout:
+        connected = True
+        if args.link == "duty":
+            async with reader.polling_lock:
+                connected = await reader.connect()
+        if connected:
+            requests = await scout(reader, requests)
+            if args.link == "duty":
+                await reader.disconnect()
+        else:
+            print("could not connect to scout, sampling every read")
+        if requests:
+            meta = dump_meta(args, requests)
+        else:
+            print("nothing answered the scout, so there is nothing to sample")
+            return
 
     # --switch runs the same number of samples on each side of a manual change,
     # so the two halves can be compared against each other at the end.
@@ -713,6 +768,12 @@ async def main() -> None:
         type=int,
         default=0,
         help="widest read to issue for --range (default: what the profile asks for)",
+    )
+    parser.add_argument(
+        "--scout",
+        action="store_true",
+        help="ask every read on its own once before sampling, and drop the ones this"
+        " station ignores; worth it for a wide --range, which hides dead addresses",
     )
     parser.add_argument(
         "--dump",

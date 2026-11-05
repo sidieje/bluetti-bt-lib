@@ -53,11 +53,17 @@ class AP300(BaseDeviceV2):
                 # remoteSetSoc (20). An Elite 200 V2 owner reported that write
                 # in the official integration's debug log and traced it to this
                 # register. The Elite 100 V2 has no sleep switch in its app, so
-                # the Apex 300 was asked instead and answers in its own
-                # encoding: 0 while awake, 2 in standby. That is why the word is
-                # reported as it reads rather than decoded as a switch, and why
-                # the write is capped at the two words the station has shown.
-                NumberField(FieldName.CTRL_SLEEP_MODE, 2013, 1, 0, 2, 1),
+                # the Apex 300 was asked instead. It answers 0 while awake and 2
+                # in standby, but writing 2 both wakes and sleeps it, and the
+                # register reads 0 again either way, so 2013 behaves like a pulse
+                # (a power button) rather than a mirror of the state. The word is
+                # reported as it reads because neither value is the 0/1 a switch
+                # decodes, and the write range covers the two words the station
+                # has shown plus the 3 and 4 the official integration uses, so
+                # those can be tried from the bench. Which register holds the
+                # awake/standby state is still open; tools/standby_probe.py
+                # watches the neighbouring registers for it.
+                NumberField(FieldName.CTRL_SLEEP_MODE, 2013, 1, 0, 4, 1),
                 SwitchField(FieldName.CTRL_ECO_DC, 2014),
                 SelectField(FieldName.CTRL_ECO_TIME_MODE_DC, 2015, EcoMode),
                 # The app lets the owner set the DC eco auto-off threshold.

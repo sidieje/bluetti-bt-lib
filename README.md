@@ -142,10 +142,14 @@ integration had armed two remote-control settings whose registers it never
 names. The official integration does not say which register it writes, so that
 mapping belongs to an owner rather than to the integration, and the Elite 100
 V2 has no sleep switch in its app at all, so the Apex 300 is the portable that
-could be asked. It answers in its own encoding: 0 while awake and 2 in
-standby. The word is reported as it reads, because neither value is the 0/1 a
-switch decodes, and the write is capped at 0 and 2 because nothing else has
-ever come back from a station.
+could be asked. It answers 0 while awake and 2 in standby, but writing 2 both
+wakes and sleeps it and the register reads 0 again either way, so 2013 behaves
+like a pulse (a power button) rather than a mirror of the state. The word is
+reported as it reads, because neither value is the 0/1 a switch decodes, and
+the write range covers 0-4: the two words the station has shown plus the 3 and
+4 the official integration uses. Which register holds the awake/standby state
+is still open, so `tools/standby_probe.py` watches a block of registers and
+reports the ones that move when the pulse goes out.
 
 ## Installation
 
@@ -358,6 +362,34 @@ cut short is now reported once, and a fault of a kind that has already been
 reported stays at DEBUG for `ABORT_REPORT_WINDOW_SECONDS`; the next warning of
 that kind says how many were held back. A link that has never answered yet stays
 quiet, because a station that is still waking misses its first request.
+
+### Watch which registers move when a command goes out
+
+`tools/standby_probe.py` finds the register that holds a state when the register
+the command writes turns out not to hold it. Register 2013 is the case that
+prompted it: an Apex 300 reads 0 there while awake and 2 in standby, but writing
+2 both wakes and sleeps the station and the register reads 0 again afterwards,
+so it is a pulse rather than a state. The probe keeps one connection open, reads
+a block of registers over and over, prints only the words that changed, and at
+the end lists the registers that held more than one value:
+
+```bash
+usage: tools/standby_probe.py [-h] -m MAC -t TYPE [-e] [--range RANGES]
+                              [--watch WATCH] [-n SAMPLES] [--gap GAP]
+                              [--pulse-at PULSE_AT] [--pulse-value PULSE_VALUE]
+                              [--chunk CHUNK] [-v]
+```
+
+`--range 2000-2100` is the control block by default, and more `--range` options
+sweep the rest of it as well (`--range 100-199 --range 1300-1450`). Each read is
+cut to the width the profile already asks for, because a station that refuses an
+unmapped register answers the whole block with an exception. `--pulse-at 10
+--pulse-value 2` writes `ctrl_sleep_mode` before sample 10 over the same
+connection, so the write and the words that follow it line up on one timeline; a
+second terminal cannot do that, because a station only answers one BLE
+connection at a time. A sample where nothing answered at all is printed as such,
+which is itself a candidate signal: a station that slept may have dropped the
+link.
 
 ## Adding fields
 

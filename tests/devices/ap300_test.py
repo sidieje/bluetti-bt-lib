@@ -35,7 +35,7 @@ class TestAP300(unittest.TestCase):
         self.assertEqual(reference - ap300, {EL100V2_ONLY_DIFFERENCE})
         self.assertEqual(ap300 - reference, {AP300_ONLY_PROBE})
 
-    def test_standby_register_2013_keeps_the_word_and_writes_only_what_the_station_shows(self):
+    def test_standby_register_2013_keeps_the_word_and_writes_a_pulse(self):
         # An owner's Apex 300 reads 0 at 2013 while awake and 2 in standby, so
         # the word is reported as it reads: a switch field would turn both into
         # a plain on/off and lose which state the station is actually in.
@@ -43,20 +43,21 @@ class TestAP300(unittest.TestCase):
         self.assertEqual(field.address, 2013)
         self.assertTrue(field.is_writeable())
 
-        for value in (0, 1, 2):
+        for value in (0, 1, 2, 3, 4):
             with self.subTest(value=value):
                 self.assertEqual(field.parse(struct.pack("!H", value)), value)
 
         device = AP300()
-        for value in (0, 2):
+        for value in (0, 2, 3, 4):
             with self.subTest(value=value):
                 command = device.build_write_command("ctrl_sleep_mode", value)
                 self.assertEqual((command.address, command.value), (2013, value))
 
-        # The station has never shown anything but 0 and 2, so nothing else is
-        # offered: not the 3 and 4 the official integration writes to an Elite
-        # 200 V2, and not the True/False a switch would send.
-        for value in (-1, 3, 4, 65535, True, "0"):
+        # Writing 2 both wakes and sleeps the station, and 2013 reads 0 again
+        # afterwards, so it is a pulse rather than a state. The range stops at
+        # the 4 the official integration uses: nothing wider has been seen on
+        # any station, and the True/False a switch would send is not a word.
+        for value in (-1, 5, 65535, True, "0"):
             with self.subTest(value=value):
                 self.assertIsNone(device.build_write_command("ctrl_sleep_mode", value))
 

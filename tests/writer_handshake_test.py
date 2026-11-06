@@ -114,6 +114,23 @@ class TestStandaloneKeyExchange(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(self.station.written[0].startswith(KEX_MAGIC))
         self.assertFalse(self.writer.handshake_failed)
 
+    async def test_a_bad_checksum_does_not_derail_the_exchange(self):
+        # verify_checksum() only logs, and it cannot raise for any frame that
+        # reaches the handler: both of its call sites sit behind
+        # is_pre_key_exchange(), which guarantees a two byte checksum field, and
+        # memoryview slicing clamps rather than raising. A bad checksum is not
+        # treated as a protocol failure either -- the library does not trust its
+        # own checksum (M1) and neither does the reader.
+        frame = bytearray(challenge())
+        frame[-2:] = b"\x00\x00"
+
+        await self.deliver(bytes(frame))
+
+        self.assertEqual(len(self.station.written), 1)
+        self.assertIsNotNone(self.writer.encryption.unsecure_aes_key)
+        self.assertFalse(self.writer.handshake_failed)
+        self.assertFalse(self.writer._handshake_failed_event.is_set())
+
     async def test_a_malformed_challenge_is_not_sent_as_a_reply(self):
         # msg_challenge() returns None for a seed it cannot use. Passing that
         # straight to write_gatt_char() raised TypeError inside the callback,
@@ -365,6 +382,83 @@ class TestEncryptedChannelReExchange(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(self.writer.handshake_failed)
         self.assertLess(elapsed, 1)
         self.assertFalse(self.writer._owns_notifier)
+
+    async def test_a_bad_checksum_inside_the_channel_still_answers_the_challenge(
+        self,
+    ):
+        await self.deliver(challenge(self.SEED_A))
+        await self.finish_exchange()
+
+        frame = bytearray(challenge(self.SEED_B))
+        frame[-2:] = b"\x00\x00"
+        self.station.written.clear()
+
+        await self.deliver(self.encrypt(bytes(frame)))
+
+        self.assertEqual(len(self.station.written), 1)
+        self.assertFalse(self.writer.handshake_failed)
+        self.assertTrue(self.session().is_ready_for_commands)
+
+    async def test_the_writer_recovers_after_a_failed_re_exchange(self):
+        await self.deliver(challenge(self.SEED_A))
+        await self.finish_exchange()
+        first_key = self.session().secure_aes_key
+
+        await self.deliver(self.encrypt(challenge(self.SEED_B)))
+        await self.deliver(
+            self.encrypt(kex_frame(PEER_PUBKEY, bytes([1]) * 64 + bytes(64)))
+        )
+        self.assertFalse(self.session().is_ready_for_commands)
+
+        # reset() drops the unsecure key along with the session, so the station
+        # has to open the next exchange in the clear -- which is also what a
+        # station that lost its own session does.
+        self.station.written.clear()
+        await self.deliver(challenge(self.SEED_A))
+        await self.finish_exchange(self.other_peer_pubkey_bytes)
+
+        self.assertTrue(self.session().is_ready_for_commands)
+        self.assertTrue(self.writer.encryption_ready.is_set())
+        # A finished exchange supersedes the earlier failure, so the writer
+        # never reports a working session and a failed handshake at once.
+        self.assertFalse(self.writer.handshake_failed)
+        self.assertFalse(self.writer._handshake_failed_event.is_set())
+        self.assertNotEqual(self.session().secure_aes_key, first_key)
+
+    async def test_connect_rebuilds_the_link_after_a_failed_re_exchange(self):
+        connect = asyncio.create_task(self.writer.connect())
+        await asyncio.sleep(0.01)
+        await self.station.callback(0, bytearray(challenge(self.SEED_A)))
+        await self.finish_exchange()
+        self.assertTrue(await connect)
+        first_key = self.session().secure_aes_key
+
+        await self.station.callback(0, bytearray(self.encrypt(challenge(self.SEED_B))))
+        await self.station.callback(
+            0,
+            bytearray(
+                self.encrypt(kex_frame(PEER_PUBKEY, bytes([1]) * 64 + bytes(64)))
+            ),
+        )
+        # The GATT link survived, but nothing can be encrypted any more.
+        self.assertTrue(self.writer._connected)
+        self.assertFalse(self.session().is_ready_for_commands)
+
+        # connect() used to answer "already connected" and leave the writer
+        # encrypting commands with no key, a TypeError the write path then
+        # swallowed. It now rebuilds the link and redoes the exchange.
+        reconnect = asyncio.create_task(self.writer.connect())
+        await asyncio.sleep(0.02)
+        self.assertTrue(self.station.is_connected)
+        self.assertIsNotNone(self.station.callback)
+
+        await self.station.callback(0, bytearray(challenge(self.SEED_A)))
+        await self.finish_exchange(self.other_peer_pubkey_bytes)
+
+        self.assertTrue(await reconnect)
+        self.assertTrue(self.session().is_ready_for_commands)
+        self.assertFalse(self.writer.handshake_failed)
+        self.assertNotEqual(self.session().secure_aes_key, first_key)
 
 
 class TestAttachedWriterStaysOffTheReadPath(unittest.IsolatedAsyncioTestCase):

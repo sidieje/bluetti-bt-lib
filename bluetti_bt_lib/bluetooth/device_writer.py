@@ -243,7 +243,23 @@ class DeviceWriter:
         to avoid race conditions. The write() method handles this automatically.
         """
         if self._connected and self.client.is_connected:
-            return True
+            if (
+                self.config.use_encryption
+                and not self._attached
+                and not self.encryption.is_ready_for_commands
+            ):
+                # The link is up but its session is not. A key exchange that
+                # failed after the session was already up leaves nothing to
+                # encrypt a command with, and the peer only restarts the
+                # exchange on a new connection, so rebuilding here is what
+                # keeps one bad re-exchange from wedging the writer for the
+                # rest of its life.
+                self.logger.warning(
+                    "Connection carries no encryption session, reconnecting"
+                )
+                await self._mark_disconnected()
+            else:
+                return True
 
         if self._attached and self.config.use_encryption:
             # The link and its session belong to the reader: whoever owns the
@@ -872,4 +888,9 @@ class DeviceWriter:
                 self.logger.warning("Key exchange rejected: %s", err)
                 self._fail_handshake()
                 return
+            # A finished exchange supersedes any earlier failure on this link,
+            # so the writer never reports a working session and a failed
+            # handshake at the same time.
+            self.handshake_failed = False
+            self._handshake_failed_event.clear()
             self.encryption_ready.set()

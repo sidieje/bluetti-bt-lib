@@ -349,7 +349,11 @@ class DeviceWriter:
             # down whatever this connect attempt started.
             await self._mark_disconnected()
             raise
-        except BaseException as err:
+        except Exception as err:
+            # Exception, not BaseException: KeyboardInterrupt and SystemExit
+            # end the process, and GeneratorExit discards this coroutine. None
+            # of them is a connection failure, and awaiting teardown inside one
+            # turns the shutdown into "coroutine ignored GeneratorExit".
             self.logger.warning("Unknown error during connect: %s", err)
             await self._mark_disconnected()
             return False

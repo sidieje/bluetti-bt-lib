@@ -73,7 +73,10 @@ def start():
     parser.add_argument("-m", "--mac", type=str, help="Mac-address of the powerstation")
     parser.add_argument("-v", "--version", type=int, help="IoT protocol version")
     parser.add_argument(
-        "-e", "--encryption", type=bool, help="Add this if encryption is needed"
+        "-e",
+        "--encryption",
+        action="store_true",
+        help="Add this if encryption is needed",
     )
     args = parser.parse_args()
 
@@ -81,7 +84,7 @@ def start():
         parser.print_help()
         return
 
-    encryption = False if args.encryption is None else True
+    encryption = args.encryption
 
     logging.basicConfig(level=logging.WARNING)
 

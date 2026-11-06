@@ -93,14 +93,22 @@ def start():
     parser.add_argument(
         "-t", "--type", type=str, help="Type of the powerstation (AC70 f.ex.)"
     )
-    parser.add_argument("--on", type=bool, help="Value to write")
-    parser.add_argument("--off", type=bool, help="Value to write")
+    value_group = parser.add_mutually_exclusive_group()
+    value_group.add_argument(
+        "--on", action="store_true", help="Turn the field on (takes no value)"
+    )
+    value_group.add_argument(
+        "--off", action="store_true", help="Turn the field off (takes no value)"
+    )
     parser.add_argument("-v", "--value", type=int, help="Value to write")
     parser.add_argument(
         "-s", "--select", type=str, help="Value to write to a Select/Enum field"
     )
     parser.add_argument(
-        "-e", "--encryption", type=bool, help="Add this if encryption is needed"
+        "-e",
+        "--encryption",
+        action="store_true",
+        help="Add this if encryption is needed",
     )
     parser.add_argument("field", type=str, help="Field name (ctrl_dc f.ex.)")
     args = parser.parse_args()
@@ -110,24 +118,19 @@ def start():
         return
 
     # No value given
-    if (
-        args.on is None
-        and args.off is None
-        and args.value is None
-        and args.select is None
-    ):
+    if not (args.on or args.off or args.value is not None or args.select):
         parser.print_help()
         return
 
-    value = args.on is not None
-    if args.off is not None:
-        value = False
-
-    if args.value is not None:
-        value = args.value
-
+    # --on/--off are flags now; precedence stays select > value > off > on.
     if args.select:
         value = args.select
+    elif args.value is not None:
+        value = args.value
+    elif args.off:
+        value = False
+    else:
+        value = True
 
     logging.basicConfig(level=logging.WARNING)
 

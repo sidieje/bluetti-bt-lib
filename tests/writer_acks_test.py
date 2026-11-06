@@ -48,6 +48,10 @@ class EncryptedStation:
         open_session(self.writer)  # every new link gets a key exchange
         self.writer.encryption_ready.set()
 
+    async def stop_notify(self, _uuid):
+        # A dropped link is unsubscribed before it goes, like any real client.
+        pass
+
     async def write_gatt_char(self, _uuid, data, response=None):
         s = self.writer.encryption
         request = s.aes_decrypt(bytes(data), s.secure_aes_key, None)

@@ -19,6 +19,7 @@ from bleak.exc import BleakError
 from cryptography.hazmat.primitives.asymmetric import ec
 
 from bluetti_bt_lib.bluetooth import DeviceWriter, DeviceWriterConfig
+from bluetti_bt_lib.bluetooth import device_writer as device_writer_mod
 from bluetti_bt_lib.bluetooth import encryption as encryption_mod
 from bluetti_bt_lib.bluetooth.encryption import (
     KEX_MAGIC,
@@ -59,18 +60,25 @@ class Station:
         self.written = []
         self.drops_writes = False
         self.callback = None
+        # Ordered trace of the link and subscription calls, so a test can see
+        # an old subscription still open when a new one is being opened.
+        self.events = []
 
     async def connect(self):
+        self.events.append("connect")
         self.is_connected = True
 
     async def disconnect(self):
+        self.events.append("disconnect")
         self.is_connected = False
         self.callback = None
 
     async def start_notify(self, _uuid, callback):
+        self.events.append("start_notify")
         self.callback = callback
 
     async def stop_notify(self, _uuid):
+        self.events.append("stop_notify")
         self.callback = None
 
     async def write_gatt_char(self, _uuid, data, response=None):
@@ -459,6 +467,71 @@ class TestEncryptedChannelReExchange(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(self.session().is_ready_for_commands)
         self.assertFalse(self.writer.handshake_failed)
         self.assertNotEqual(self.session().secure_aes_key, first_key)
+
+    async def test_the_reconnect_closes_the_old_subscription_before_its_link(self):
+        connect = asyncio.create_task(self.writer.connect())
+        await asyncio.sleep(0.01)
+        await self.station.callback(0, bytearray(challenge(self.SEED_A)))
+        await self.finish_exchange()
+        self.assertTrue(await connect)
+
+        await self.station.callback(0, bytearray(self.encrypt(challenge(self.SEED_B))))
+        await self.station.callback(
+            0,
+            bytearray(
+                self.encrypt(kex_frame(PEER_PUBKEY, bytes([1]) * 64 + bytes(64)))
+            ),
+        )
+
+        reconnect = asyncio.create_task(self.writer.connect())
+        await asyncio.sleep(0.02)
+        await self.station.callback(0, bytearray(challenge(self.SEED_A)))
+        await self.finish_exchange(self.other_peer_pubkey_bytes)
+        self.assertTrue(await reconnect)
+
+        # One subscription at a time: the old one is dropped with the link it
+        # belonged to, so a reconnect never leaves two handlers on the client.
+        # The station starts already connected, so the first connect() opens no
+        # link of its own.
+        self.assertEqual(
+            self.station.events,
+            [
+                "start_notify",
+                "stop_notify",
+                "disconnect",
+                "connect",
+                "start_notify",
+            ],
+        )
+        self.assertEqual(self.station.callback, self.writer._notification_handler)
+        self.assertTrue(self.writer.has_notifier)
+        self.assertTrue(self.writer._owns_notifier)
+
+    async def test_a_write_that_gives_up_on_its_ack_leaves_nothing_pending(self):
+        await self.deliver(challenge(self.SEED_A))
+        await self.finish_exchange()
+        self.writer._connected = True
+        self.writer.has_notifier = True
+        self.writer._owns_notifier = True
+
+        # The station never answers, so the writer stops waiting and drops the
+        # link. Nothing it was waiting on may outlive that write.
+        with patch.object(device_writer_mod, "WRITE_ACK_TIMEOUT_SECONDS", 0.05):
+            self.assertFalse(await self.writer.write(FieldName.CTRL_AC.value, True))
+
+        self.assertIsNone(self.writer._write_future)
+        self.assertIsNone(self.writer._write_command)
+        self.assertFalse(self.writer._connected)
+        self.assertFalse(self.writer._owns_notifier)
+        self.assertFalse(self.writer.has_notifier)
+        self.assertEqual(self.station.events, ["stop_notify", "disconnect"])
+
+        # An answer that arrives after the writer gave up now lands on a link
+        # with no session: it has to be dropped, not settled against a future
+        # that no longer exists.
+        await self.deliver(bytes([0x01, 0x03, 0x00, 0x00]))
+        self.assertIsNone(self.writer._write_future)
+        self.assertIsNone(self.writer._write_command)
 
 
 class TestAttachedWriterStaysOffTheReadPath(unittest.IsolatedAsyncioTestCase):

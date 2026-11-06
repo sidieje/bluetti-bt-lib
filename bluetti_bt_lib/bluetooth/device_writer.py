@@ -343,6 +343,16 @@ class DeviceWriter:
         if self._attached:
             return
 
+        # The link may still be up: a key exchange that failed after the
+        # session was established leaves the subscription in place. Drop it
+        # before the link goes, or the next connect() subscribes a second time,
+        # which some backends (bleak-esphome) refuse for good. The reader
+        # unsubscribes the same way in its own _mark_disconnected().
+        if self.has_notifier and self.client and self.client.is_connected:
+            try:
+                await self.client.stop_notify(NOTIFY_UUID)
+            except Exception:
+                pass
         self.has_notifier = False
         self._owns_notifier = False
         if not self._borrowed_encryption:

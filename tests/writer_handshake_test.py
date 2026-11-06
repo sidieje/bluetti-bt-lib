@@ -533,6 +533,33 @@ class TestEncryptedChannelReExchange(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(self.writer._write_future)
         self.assertIsNone(self.writer._write_command)
 
+    async def test_a_refused_unsubscribe_is_logged_and_still_drops_the_link(self):
+        connect = asyncio.create_task(self.writer.connect())
+        await asyncio.sleep(0.01)
+        await self.station.callback(0, bytearray(challenge(self.SEED_A)))
+        await self.finish_exchange()
+        self.assertTrue(await connect)
+
+        async def refuse(_uuid):
+            raise BleakError("backend refused to unsubscribe")
+
+        self.station.stop_notify = refuse
+
+        with self.assertLogs(self.writer.logger, level="DEBUG") as logs:
+            await self.writer._mark_disconnected()
+
+        # A failed unsubscribe is cleanup, not a reason to keep a dead link
+        # open, so the disconnect still goes ahead. The failure is recorded
+        # rather than swallowed: a backend that holds notification state across
+        # a disconnect is the one that would later refuse a fresh subscription.
+        self.assertFalse(self.station.is_connected)
+        self.assertFalse(self.writer.has_notifier)
+        self.assertFalse(self.writer._owns_notifier)
+        self.assertTrue(
+            any("Failed to unsubscribe" in line for line in logs.output),
+            logs.output,
+        )
+
 
 class TestAttachedWriterStaysOffTheReadPath(unittest.IsolatedAsyncioTestCase):
     async def test_an_attached_writer_never_runs_its_own_handler(self):

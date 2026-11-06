@@ -351,8 +351,11 @@ class DeviceWriter:
         if self.has_notifier and self.client and self.client.is_connected:
             try:
                 await self.client.stop_notify(NOTIFY_UUID)
-            except Exception:
-                pass
+            except Exception as err:
+                # Cleanup must not hold up the reconnect, but a subscription
+                # the backend kept is exactly what a later double subscribe
+                # would come from, so leave a trace of who refused.
+                self.logger.debug("Failed to unsubscribe: %s", err)
         self.has_notifier = False
         self._owns_notifier = False
         if not self._borrowed_encryption:
@@ -363,8 +366,10 @@ class DeviceWriter:
         if self.client and self.client.is_connected:
             try:
                 await self.client.disconnect()
-            except Exception:
-                pass
+            except Exception as err:
+                # Raising is normal on a link the stack already dropped, hence
+                # debug rather than warning.
+                self.logger.debug("Failed to disconnect: %s", err)
 
     async def disconnect(self):
         """Disconnect from the device."""

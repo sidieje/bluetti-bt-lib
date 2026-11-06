@@ -8,6 +8,7 @@ from dataclasses import dataclass
 import async_timeout
 from bleak import BleakClient
 from bleak.exc import BleakError
+from cryptography.exceptions import InvalidSignature
 
 from .encryption import AES_BLOCK_SIZE, BluettiEncryption, Message, MessageType
 from .bleak_errors import describe_bleak_error
@@ -823,9 +824,52 @@ class DeviceWriter:
             self.logger.warning("Unknown key exchange message type")
             return
 
+        if decrypted_type == MessageType.CHALLENGE:
+            # A station can restart the exchange inside the encrypted channel,
+            # and this is the only place a standalone writer sees it. Answering
+            # is not a courtesy: the reply is what refreshes the unsecure IV
+            # that the peer pubkey signature is later verified against, so
+            # ignoring the challenge makes the pubkey that follows look like it
+            # carries a bad signature.
+            challenge_response = self.encryption.msg_challenge(decrypted)
+            if challenge_response is not None:
+                await self._write_handshake(
+                    self.encryption.aes_encrypt(challenge_response, key, None),
+                    "challenge response",
+                )
+            return
+
+        if decrypted_type == MessageType.CHALLENGE_ACCEPTED:
+            self.logger.debug("Challenge accepted (encrypted)")
+            return
+
         if decrypted_type == MessageType.PEER_PUBKEY:
-            response = self.encryption.msg_peer_pubkey(decrypted)
+            try:
+                response = self.encryption.msg_peer_pubkey(decrypted)
+            except InvalidSignature:
+                # Usually the stale IV the branch above exists to prevent. The
+                # session cannot be salvaged, so report the handshake as failed
+                # instead of waiting on keys that never settle, and drop the
+                # session the link would otherwise keep encrypting with. Only a
+                # new connection makes the peer challenge again; tearing the
+                # link down is not this writer's job, since the reader owns it
+                # wherever this handler does not run at all.
+                self.logger.warning("Peer pubkey signature rejected")
+                self.encryption.reset()
+                self.encrypted_buffer.clear()
+                self.encryption_ready.clear()
+                self._fail_handshake()
+                return
             await self._write_handshake(response, "peer pubkey reply")
-        elif decrypted_type == MessageType.PUBKEY_ACCEPTED:
-            self.encryption.msg_key_accepted(decrypted)
+            return
+
+        if decrypted_type == MessageType.PUBKEY_ACCEPTED:
+            try:
+                self.encryption.msg_key_accepted(decrypted)
+            except (ValueError, AttributeError) as err:
+                # A refused acceptance, or one that arrives with no local
+                # keypair left to finish, leaves no session to mark ready.
+                self.logger.warning("Key exchange rejected: %s", err)
+                self._fail_handshake()
+                return
             self.encryption_ready.set()

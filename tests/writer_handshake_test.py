@@ -16,12 +16,15 @@ import unittest
 from unittest.mock import patch
 
 from bleak.exc import BleakError
+from cryptography.hazmat.primitives.asymmetric import ec
 
 from bluetti_bt_lib.bluetooth import DeviceWriter, DeviceWriterConfig
+from bluetti_bt_lib.bluetooth import encryption as encryption_mod
 from bluetti_bt_lib.bluetooth.encryption import (
     KEX_MAGIC,
     BluettiEncryption,
     hexsum,
+    pubkey_to_bytes,
 )
 from bluetti_bt_lib.devices.ac180 import AC180
 from bluetti_bt_lib.fields import FieldName
@@ -30,6 +33,8 @@ from bluetti_bt_lib.utils.bleak_client_mock import ClientMockNoEncryption
 NOTIFY_UUID = "0000ffe1-0000-1000-8000-00805f9b34fb"
 
 CHALLENGE = 1
+PEER_PUBKEY = 4
+PUBKEY_ACCEPTED = 6
 UNKNOWN_TYPE = 99
 
 
@@ -189,6 +194,177 @@ class TestStandaloneKeyExchange(unittest.IsolatedAsyncioTestCase):
 
         second.cancel()
         await asyncio.gather(second, return_exceptions=True)
+
+
+class TestEncryptedChannelReExchange(unittest.IsolatedAsyncioTestCase):
+    """A station that restarts the exchange after the session is up.
+
+    The frames are driven as a whole sequence rather than one per test: the
+    peer pubkey is verified against the IV that answering a challenge refreshes,
+    so a challenge the writer ignores leaves the next pubkey looking like it
+    carries a bad signature. Only the sequence shows that.
+    """
+
+    # The peer's side of the exchange. Its signing key is well-known and lives
+    # in the library, so the test only needs a real ECDH key to agree with.
+    peer = ec.generate_private_key(ec.SECP256R1())
+    peer_pubkey_bytes = pubkey_to_bytes(peer.public_key())
+    # A station that restarts the exchange brings a fresh key of its own.
+    other_peer = ec.generate_private_key(ec.SECP256R1())
+    other_peer_pubkey_bytes = pubkey_to_bytes(other_peer.public_key())
+
+    SEED_A = bytes([1, 2, 3, 4])
+    SEED_B = bytes([9, 8, 7, 6])
+
+    async def asyncSetUp(self):
+        self.station = Station()
+        self.writer = build_writer(self.station)
+        # What the signature check was really asked to verify against.
+        self.suffixes = []
+
+    def session(self):
+        return self.writer.encryption
+
+    def encrypt(self, frame: bytes) -> bytearray:
+        """Wrap a frame the way the station would at the current step."""
+        session = self.session()
+        key, iv = session.getKeyIv()
+        return bytearray(session.aes_encrypt(frame, key, iv))
+
+    def decrypt(self, frame: bytes) -> bytes:
+        session = self.session()
+        key, iv = session.getKeyIv()
+        return session.aes_decrypt(bytes(frame), key, iv)
+
+    async def deliver(self, frame):
+        await self.writer._notification_handler(0, bytearray(frame))
+
+    def accept_pubkey(self, pubkey_bytes: bytes | None = None):
+        """Stand in for the signature check, recording the IV it used.
+
+        The station signs with a key whose counterpart lives in the library, so
+        a test cannot produce a signature the real check accepts. What matters
+        here is which IV the check was handed.
+        """
+        agreed = self.peer_pubkey_bytes if pubkey_bytes is None else pubkey_bytes
+
+        def verify(_data, suffix):
+            self.suffixes.append(bytes(suffix))
+            return agreed
+
+        return patch.object(
+            encryption_mod, "verify_and_extract_signed_data", side_effect=verify
+        )
+
+    async def finish_exchange(self, pubkey_bytes: bytes | None = None):
+        """Send the pubkey and its acceptance, as the station does."""
+        agreed = self.peer_pubkey_bytes if pubkey_bytes is None else pubkey_bytes
+        with self.accept_pubkey(agreed):
+            await self.deliver(self.encrypt(kex_frame(PEER_PUBKEY, agreed + bytes(64))))
+            await self.deliver(self.encrypt(kex_frame(PUBKEY_ACCEPTED, b"\x00")))
+
+    async def test_a_first_exchange_completes_over_a_live_connect(self):
+        connect = asyncio.create_task(self.writer.connect())
+        await asyncio.sleep(0.01)  # let connect() subscribe
+
+        await self.station.callback(0, bytearray(challenge(self.SEED_A)))
+        with self.accept_pubkey():
+            await self.station.callback(
+                0,
+                bytearray(
+                    self.encrypt(
+                        kex_frame(PEER_PUBKEY, self.peer_pubkey_bytes + bytes(64))
+                    )
+                ),
+            )
+            await self.station.callback(
+                0, bytearray(self.encrypt(kex_frame(PUBKEY_ACCEPTED, b"\x00")))
+            )
+
+        self.assertTrue(await asyncio.wait_for(connect, 1))
+        self.assertTrue(self.session().is_ready_for_commands)
+        self.assertFalse(self.writer.handshake_failed)
+
+    async def test_a_restarted_exchange_completes(self):
+        await self.deliver(challenge(self.SEED_A))
+        await self.finish_exchange()
+        self.assertTrue(self.writer.encryption_ready.is_set())
+        first_key = self.session().secure_aes_key
+
+        self.station.written.clear()
+        await self.deliver(self.encrypt(challenge(self.SEED_B)))
+
+        # The challenge was answered, and the answer carries the fresh IV the
+        # station will sign the next pubkey with.
+        self.assertEqual(len(self.station.written), 1)
+        self.assertIn(
+            self.session().unsecure_aes_iv[8:12],
+            self.decrypt(self.station.written[0]),
+        )
+
+        await self.finish_exchange(self.other_peer_pubkey_bytes)
+
+        self.assertFalse(self.writer.handshake_failed)
+        self.assertTrue(self.writer.encryption_ready.is_set())
+        self.assertTrue(self.session().is_ready_for_commands)
+        self.assertNotEqual(self.session().secure_aes_key, first_key)
+        # Both pubkeys were checked, the second one against the IV the second
+        # challenge derived. That is the coupling the writer used to miss.
+        self.assertEqual(len(self.suffixes), 2)
+        self.assertNotEqual(self.suffixes[0], self.suffixes[1])
+        self.assertEqual(self.suffixes[1], self.session().unsecure_aes_iv)
+
+    async def test_a_rejected_pubkey_drops_the_session(self):
+        await self.deliver(challenge(self.SEED_A))
+        await self.finish_exchange()
+
+        await self.deliver(self.encrypt(challenge(self.SEED_B)))
+        # A signature the station cannot back up: the session is unusable, and
+        # leaving it in place would have the writer encrypt commands with keys
+        # the peer no longer holds.
+        await self.deliver(
+            self.encrypt(kex_frame(PEER_PUBKEY, bytes([1]) * 64 + bytes(64)))
+        )
+
+        self.assertTrue(self.writer.handshake_failed)
+        self.assertTrue(self.writer._handshake_failed_event.is_set())
+        self.assertFalse(self.writer.encryption_ready.is_set())
+        self.assertFalse(self.session().is_ready_for_commands)
+        self.assertIsNone(self.session().secure_aes_key)
+        self.assertIsNone(self.session().unsecure_aes_iv)
+
+    async def test_a_refused_acceptance_fails_the_handshake(self):
+        await self.deliver(challenge(self.SEED_A))
+        with self.accept_pubkey():
+            await self.deliver(
+                self.encrypt(kex_frame(PEER_PUBKEY, self.peer_pubkey_bytes + bytes(64)))
+            )
+            # Acceptance code other than 0: msg_key_accepted() rejects it.
+            await self.deliver(self.encrypt(kex_frame(PUBKEY_ACCEPTED, b"\x01")))
+
+        self.assertTrue(self.writer.handshake_failed)
+        self.assertFalse(self.writer.encryption_ready.is_set())
+        self.assertFalse(self.session().is_ready_for_commands)
+
+    async def test_connect_gives_up_when_the_pubkey_is_rejected(self):
+        connect = asyncio.create_task(self.writer.connect())
+        await asyncio.sleep(0.01)
+
+        start = time.monotonic()
+        await self.station.callback(0, bytearray(challenge(self.SEED_A)))
+        await self.station.callback(
+            0,
+            bytearray(
+                self.encrypt(kex_frame(PEER_PUBKEY, bytes([1]) * 64 + bytes(64)))
+            ),
+        )
+        connected = await connect
+        elapsed = time.monotonic() - start
+
+        self.assertFalse(connected)
+        self.assertTrue(self.writer.handshake_failed)
+        self.assertLess(elapsed, 1)
+        self.assertFalse(self.writer._owns_notifier)
 
 
 class TestAttachedWriterStaysOffTheReadPath(unittest.IsolatedAsyncioTestCase):

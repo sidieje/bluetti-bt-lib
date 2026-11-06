@@ -403,12 +403,18 @@ class TestEncryptionReadyWait(unittest.IsolatedAsyncioTestCase):
         # until the entire write timed out, leaving the caller with a bare
         # timeout and no explanation of why nothing was sent.
         client = ClientMockNoEncryption()
+        # A writer handed a reader has to share that reader's polling_lock, so
+        # the fake carries one and the writer is built with it.
+        reader_lock = asyncio.Lock()
+        fake_reader = SimpleNamespace(
+            encryption=BluettiEncryption(), polling_lock=reader_lock
+        )
         writer = DeviceWriter(
             client,
             AC180(),
             DeviceWriterConfig(timeout=4, use_encryption=True),
-            asyncio.Lock(),
-            reader=SimpleNamespace(encryption=BluettiEncryption()),
+            reader_lock,
+            reader=fake_reader,
         )
         writer.attach()
 

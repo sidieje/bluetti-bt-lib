@@ -102,11 +102,32 @@ class DeviceWriter:
         lock: asyncio.Lock | None = None,
         reader: DeviceReader | None = None,
     ):
+        """Create a writer.
+
+        One link, one lock: when a reader is supplied the writer shares that
+        reader's connection, so it must serialise on the reader's polling_lock.
+        _write() calls DeviceReader.read_locked(), which is only sound while the
+        reader's own lock is held, and an encrypted link carries a single
+        session whose stream any interleaved frame breaks. A reader without a
+        polling_lock is not a DeviceReader, so that is a TypeError; a lock that
+        is not the reader's is refused rather than left to corrupt frames.
+        """
         self.client = bleak_client
         self.reader = reader
         self.bluetti_device = bluetti_device
         self.config = config
-        self.polling_lock = lock or asyncio.Lock()
+        if reader is None:
+            self.polling_lock = lock or asyncio.Lock()
+        else:
+            try:
+                reader_lock = reader.polling_lock
+            except AttributeError:
+                raise TypeError("reader must provide a polling_lock") from None
+            if lock is not None and lock is not reader_lock:
+                raise ValueError(
+                    "lock must be the reader's polling_lock: one link, one lock"
+                )
+            self.polling_lock = reader_lock
         self.encryption = BluettiEncryption()
         self.encrypted_buffer = bytearray()
         self.encryption_ready = asyncio.Event()
@@ -141,6 +162,12 @@ class DeviceWriter:
         an attached writer leaves the shared connection alone for the
         reader to tear down, and the writer stays attached, so a later
         write never subscribes on that client or drops it.
+
+        Attaching is not what establishes the shared lock: pass the reader to
+        the constructor (or that reader's polling_lock as lock) so a poll and a
+        write can never be on the wire at the same time. A writer attached with
+        no reader in sight cannot be checked, so it is the caller's job to hand
+        it the reader's lock.
         """
         self._connected = True
         self._attached = True

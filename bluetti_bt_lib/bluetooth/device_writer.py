@@ -109,6 +109,10 @@ class DeviceWriter:
         self.encryption = BluettiEncryption()
         self.encrypted_buffer = bytearray()
         self.encryption_ready = asyncio.Event()
+        self.handshake_failed = False
+        """Set when a key exchange cannot complete; only a new link fixes it."""
+        self._handshake_failed_event = asyncio.Event()
+        """Wakes _await_handshake() when the exchange failed instead of hung."""
         self.has_notifier = False
         self._connected = False
         self._owns_notifier = False
@@ -173,6 +177,64 @@ class DeviceWriter:
 
         return True
 
+    async def _await_handshake(self) -> bool:
+        """Wait for the key exchange of a fresh standalone connection.
+
+        Returns as soon as the exchange either completes or fails. A failed
+        exchange never recovers over a live link: the peer only sends a new
+        challenge on a new connection, so sitting out the whole timeout would
+        burn the caller's write budget and leave nothing in the log naming
+        the cause.
+        """
+        ready = asyncio.ensure_future(self.encryption_ready.wait())
+        failed = asyncio.ensure_future(self._handshake_failed_event.wait())
+        try:
+            done, _ = await asyncio.wait(
+                {ready, failed},
+                timeout=self.config.timeout,
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+        finally:
+            ready.cancel()
+            failed.cancel()
+
+        if self.encryption_ready.is_set():
+            return True
+
+        if self.handshake_failed:
+            self.logger.warning("Key exchange failed, dropping the connection")
+        elif not done:
+            self.logger.warning(
+                "Key exchange did not complete within %ss", self.config.timeout
+            )
+        return False
+
+    def _fail_handshake(self) -> None:
+        """Stop waiting for a key exchange that cannot complete.
+
+        Called from the notification callback, where raising is not an option
+        because bleak runs it as a detached task and the exception is lost.
+        """
+        self.handshake_failed = True
+        self._handshake_failed_event.set()
+
+    async def _write_handshake(self, payload: bytes, what: str) -> bool:
+        """Send a key exchange reply.
+
+        A BleakError raised inside a notification callback is swallowed by
+        bleak's dispatch, which leaves connect() waiting its full timeout for
+        an event that can no longer arrive with nothing in the log naming the
+        cause. Catching it here and flagging the handshake lets the writer
+        give the connection up instead.
+        """
+        try:
+            await self.client.write_gatt_char(WRITE_UUID, payload)
+            return True
+        except BleakError as err:
+            self.logger.warning("Failed to send the %s: %s", what, err)
+            self._fail_handshake()
+            return False
+
     async def connect(self) -> bool:
         """Establish a persistent connection to the device.
         
@@ -216,15 +278,19 @@ class DeviceWriter:
                 # subscription and handshake are gone even though the
                 # Python object identity has not changed.
                 self.encryption_ready.clear()
+                # Cleared here rather than in _mark_disconnected(), so the
+                # flag still records why the last attempt failed after that
+                # attempt has been torn down.
+                self.handshake_failed = False
+                self._handshake_failed_event.clear()
                 await self.client.start_notify(
                     NOTIFY_UUID, self._notification_handler
                 )
                 self.has_notifier = True
                 self._owns_notifier = True
-                await asyncio.wait_for(
-                    self.encryption_ready.wait(),
-                    timeout=self.config.timeout,
-                )
+                if not await self._await_handshake():
+                    await self._mark_disconnected()
+                    return False
 
             self.logger.debug("Connected to device")
             self._connected = True
@@ -305,6 +371,8 @@ class DeviceWriter:
                 self.encryption.reset()
             self.encrypted_buffer.clear()
             self.encryption_ready.clear()
+            self.handshake_failed = False
+            self._handshake_failed_event.clear()
             self._connected = False
 
 
@@ -676,14 +744,38 @@ class DeviceWriter:
         return header_size + padded_len
 
     async def _notification_handler(self, _: int, data: bytearray):
+        """Handle notifications on a connection this writer owns itself.
+
+        Only a standalone writer ever subscribes this callback. A writer
+        attached to a reader's shared connection does not subscribe at all
+        (see attach()), so on the persistent link the reader's own handler is
+        the only one that runs and the two are not twins to keep in step.
+        This handler therefore carries no connection lifecycle and no
+        reconnect logic, but it does have to survive a bad frame: bleak runs
+        the callback as a detached task, so anything raised here is lost and
+        the writer is left waiting for a handshake that can no longer arrive.
+        """
         message = Message(data)
 
         if message.is_pre_key_exchange:
             message.verify_checksum()
 
-            if message.type == MessageType.CHALLENGE:
+            try:
+                message_type = message.type
+            except (ValueError, IndexError):
+                # Unknown type byte, or a frame too short to carry one.
+                self.logger.warning("Unknown key exchange message type")
+                return
+
+            if message_type == MessageType.CHALLENGE:
                 response = self.encryption.msg_challenge(message)
-                await self.client.write_gatt_char(WRITE_UUID, response)
+                if response is None:
+                    # A challenge we cannot turn into a reply means there is
+                    # no session to wait for: give up now rather than sit out
+                    # the caller's timeout on a handshake that cannot happen.
+                    self._fail_handshake()
+                    return
+                await self._write_handshake(response, "challenge response")
             return
 
         if self.encryption.unsecure_aes_key is None:
@@ -725,9 +817,15 @@ class DeviceWriter:
             return
 
         decrypted.verify_checksum()
-        if decrypted.type == MessageType.PEER_PUBKEY:
+        try:
+            decrypted_type = decrypted.type
+        except (ValueError, IndexError):
+            self.logger.warning("Unknown key exchange message type")
+            return
+
+        if decrypted_type == MessageType.PEER_PUBKEY:
             response = self.encryption.msg_peer_pubkey(decrypted)
-            await self.client.write_gatt_char(WRITE_UUID, response)
-        elif decrypted.type == MessageType.PUBKEY_ACCEPTED:
+            await self._write_handshake(response, "peer pubkey reply")
+        elif decrypted_type == MessageType.PUBKEY_ACCEPTED:
             self.encryption.msg_key_accepted(decrypted)
             self.encryption_ready.set()

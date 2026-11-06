@@ -110,7 +110,31 @@ class TestBuildRegisterMap(unittest.TestCase):
         self.assertEqual(registers_map[0:2], b"\x01\x02")
         self.assertEqual(registers_map[20:22], b"\x03\x04")
 
-    def test_empty_block_keeps_the_map_a_full_size(self):
+    def test_blocks_are_placed_by_key_and_not_by_order(self):
+        """The key says where a block belongs, so the order says nothing.
+
+        json.load happens to keep the order a file lists its keys in, so a
+        dump written by bluetti-readall has always arrived in order here. A
+        hand-edited or re-serialised dump need not, and placing blocks by
+        their turn through the dictionary would quietly misplace them.
+        """
+        registers_map = build_register_map({"20": "0304", "0": "0102", "10": "0506"})
+        self.assertEqual(registers_map[0:2], b"\x01\x02")
+        self.assertEqual(registers_map[20:22], b"\x05\x06")
+        self.assertEqual(registers_map[40:42], b"\x03\x04")
+
+    def test_absent_block_leaves_a_gap_rather_than_shifting_the_rest(self):
+        """A block the dump never got an answer for is a gap, not a shift.
+
+        Dropping a key used to pull every block after it down by a block,
+        which is the same fault as reading the map from the wrong register.
+        """
+        registers_map = build_register_map({"0": "0102", "20": "0304"})
+        self.assertEqual(len(registers_map), FULL_REGISTER_MAP_SIZE)
+        self.assertEqual(registers_map[20:40], b"\x00" * 20)
+        self.assertEqual(registers_map[40:42], b"\x03\x04")
+
+    def test_empty_block_is_still_a_whole_block(self):
         """An empty block is a whole block.
 
         Padding it with less than a block used to shrink the map and slide
@@ -121,6 +145,17 @@ class TestBuildRegisterMap(unittest.TestCase):
         self.assertEqual(len(registers_map), FULL_REGISTER_MAP_SIZE)
         self.assertEqual(registers_map[20:40], b"\x00" * 20)
         self.assertEqual(registers_map[40:42], b"\x03\x04")
+
+    def test_block_outside_the_map_is_dropped(self):
+        """A key past the readall range cannot be placed.
+
+        Writing it would grow the map, and parse() takes the range of fields
+        it will decode from the map's length.
+        """
+        registers_map = build_register_map({"0": "0102", "20000": "0304", "-1": "0506"})
+        self.assertEqual(len(registers_map), FULL_REGISTER_MAP_SIZE)
+        self.assertEqual(registers_map[0:2], b"\x01\x02")
+        self.assertEqual(registers_map[-20:], b"\x00" * 20)
 
 
 class TestParseReadall(unittest.TestCase):
@@ -161,18 +196,34 @@ class TestParseReadall(unittest.TestCase):
             FieldName(key)
 
     def test_missing_intermediate_block_does_not_misalign_the_map(self):
-        """A block that came back empty still costs a whole block.
+        """A block the dump is missing still costs a whole block.
 
-        readall writes an empty string for a read that answered with nothing.
-        Padding that with a half block used to pull every later block down by
-        ten bytes, which is the same class of fault as reading from the wrong
-        starting register.
+        readall writes an empty string for a read that answered with nothing,
+        and a key can be absent from the file altogether. Either way the
+        registers after it belong at their own addresses, and pulling them
+        down a block is the same class of fault as reading the map from the
+        wrong starting register.
         """
-        dump = _v1_dump()
-        dump.registers["30"] = ""
+        for missing, label in (("", "empty"), (None, "absent")):
+            with self.subTest(block=label):
+                dump = _v1_dump()
+                if missing is None:
+                    del dump.registers["30"]
+                else:
+                    dump.registers["30"] = missing
 
-        registers_map = build_register_map(dump.registers)
-        self.assertEqual(len(registers_map), FULL_REGISTER_MAP_SIZE)
+                registers_map = build_register_map(dump.registers)
+                self.assertEqual(len(registers_map), FULL_REGISTER_MAP_SIZE)
+
+                parsed, error = parse_readall(dump)
+                self.assertIsNone(error)
+                self.assertEqual(parsed[FieldName.DEVICE_TYPE.value], "EB3A")
+                self.assertEqual(parsed[FieldName.BATTERY_SOC.value], 55)
+
+    def test_dump_with_blocks_out_of_order_still_decodes(self):
+        """The order the keys sit in is not part of the format."""
+        dump = _v1_dump()
+        dump.registers = dict(reversed(list(dump.registers.items())))
 
         parsed, error = parse_readall(dump)
         self.assertIsNone(error)

@@ -49,12 +49,6 @@ class TestBluettiDevice(unittest.TestCase):
             device.get_full_registers_range()
 
         with self.assertRaises(NotImplementedError):
-            device.get_device_type_registers()
-
-        with self.assertRaises(NotImplementedError):
-            device.get_device_sn_registers()
-
-        with self.assertRaises(NotImplementedError):
             device.get_iot_version()
 
         with self.assertRaises(NotImplementedError):

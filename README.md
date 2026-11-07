@@ -231,7 +231,7 @@ FieldName.CTRL_POWER_LIFTING: False
 
 ### Write to supported device
 
-INFO: Devices with encryption are currently not supported!
+Devices with encryption are supported: pass `-e` and the writer completes the key exchange first, so the command goes out over the encrypted channel. `bluetti-detect` reports whether a station needs it.
 
 ```bash
 usage: bluetti-write [-h] [-m MAC] [-t TYPE] [--on | --off] [-v VALUE] [-s SELECT] [-e] field

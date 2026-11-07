@@ -38,6 +38,11 @@ PEER_PUBKEY = 4
 PUBKEY_ACCEPTED = 6
 UNKNOWN_TYPE = 99
 
+# A signed pubkey is 64 bytes of key plus a 64 byte signature, and
+# verify_and_extract_signed_data() raises ValueError for anything else. These
+# are the lengths a truncated or padded frame really arrives with.
+MALFORMED_PUBKEY_LENGTHS = (0, 10, 127)
+
 
 def kex_frame(type_byte: int, payload: bytes) -> bytes:
     """Build a frame in the pre-key-exchange format the station sends."""
@@ -357,6 +362,108 @@ class TestEncryptedChannelReExchange(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(self.session().is_ready_for_commands)
         self.assertIsNone(self.session().secure_aes_key)
         self.assertIsNone(self.session().unsecure_aes_iv)
+
+    def malformed_pubkey(self, payload_len: int) -> bytearray:
+        """A correctly encrypted PEER_PUBKEY carrying no room for a pubkey.
+
+        Only the payload is wrong: the frame is well formed, checksummed and
+        encrypted with the session key, so it reaches msg_peer_pubkey() and
+        fails inside it.
+        """
+        return self.encrypt(kex_frame(PEER_PUBKEY, bytes(payload_len)))
+
+    async def test_a_malformed_pubkey_drops_the_session(self):
+        # msg_peer_pubkey() caught InvalidSignature but not the ValueError that
+        # verify_and_extract_signed_data() raises for a frame that is not
+        # exactly 128 bytes. It escaped this callback, bleak lost it, and the
+        # writer kept waiting for keys that could no longer arrive.
+        for length in MALFORMED_PUBKEY_LENGTHS:
+            with self.subTest(payload_length=length):
+                # A writer per length: the first one has its session dropped.
+                self.station = Station()
+                self.writer = build_writer(self.station)
+                await self.deliver(challenge(self.SEED_A))
+                await self.finish_exchange()
+                await self.deliver(self.encrypt(challenge(self.SEED_B)))
+                self.station.written.clear()
+
+                await self.deliver(self.malformed_pubkey(length))
+
+                self.assertTrue(self.writer.handshake_failed)
+                self.assertTrue(self.writer._handshake_failed_event.is_set())
+                self.assertFalse(self.writer.encryption_ready.is_set())
+                self.assertFalse(self.session().is_ready_for_commands)
+                self.assertIsNone(self.session().secure_aes_key)
+                self.assertIsNone(self.session().unsecure_aes_key)
+                self.assertIsNone(self.session().unsecure_aes_iv)
+                # Nothing to answer the frame with, and no half-built reply.
+                self.assertEqual(self.station.written, [])
+
+    async def test_a_malformed_pubkey_names_the_reason(self):
+        await self.deliver(challenge(self.SEED_A))
+        await self.finish_exchange()
+
+        with self.assertLogs(self.writer.logger, level="WARNING") as logs:
+            await self.deliver(self.malformed_pubkey(10))
+
+        self.assertTrue(
+            any(
+                "Peer pubkey rejected (Unexpected message length)" in line
+                for line in logs.output
+            ),
+            logs.output,
+        )
+
+    async def test_a_full_length_bad_signature_still_reports_a_bad_signature(self):
+        # The catch widened, but the two causes must stay distinguishable in the
+        # log: InvalidSignature carries no message of its own.
+        await self.deliver(challenge(self.SEED_A))
+        await self.finish_exchange()
+        await self.deliver(self.encrypt(challenge(self.SEED_B)))
+
+        with self.assertLogs(self.writer.logger, level="WARNING") as logs:
+            await self.deliver(
+                self.encrypt(kex_frame(PEER_PUBKEY, bytes([1]) * 64 + bytes(64)))
+            )
+
+        self.assertTrue(
+            any(
+                "Peer pubkey rejected (bad signature)" in line
+                for line in logs.output
+            ),
+            logs.output,
+        )
+
+    async def test_connect_gives_up_on_a_malformed_pubkey(self):
+        # The frame that used to hang connect() for its whole timeout, here
+        # during the initial exchange rather than a re-exchange.
+        connect = asyncio.create_task(self.writer.connect())
+        await asyncio.sleep(0.01)
+
+        start = time.monotonic()
+        await self.station.callback(0, bytearray(challenge(self.SEED_A)))
+        await self.station.callback(0, bytearray(self.malformed_pubkey(0)))
+        connected = await connect
+        elapsed = time.monotonic() - start
+
+        self.assertFalse(connected)
+        self.assertTrue(self.writer.handshake_failed)
+        self.assertLess(elapsed, 1)
+        self.assertFalse(self.writer._owns_notifier)
+
+    async def test_the_writer_answers_a_fresh_challenge_after_a_malformed_pubkey(self):
+        # Failing the handshake is not the end of the handler: reset() drops the
+        # unsecure key along with the session, so the station opens the next
+        # exchange in the clear, and that is the recovery path.
+        await self.deliver(challenge(self.SEED_A))
+        await self.deliver(self.malformed_pubkey(127))
+        self.assertTrue(self.writer.handshake_failed)
+        self.station.written.clear()
+
+        await self.deliver(challenge(self.SEED_B))
+
+        self.assertEqual(len(self.station.written), 1)
+        self.assertIsNotNone(self.session().unsecure_aes_key)
 
     async def test_a_refused_acceptance_fails_the_handshake(self):
         await self.deliver(challenge(self.SEED_A))

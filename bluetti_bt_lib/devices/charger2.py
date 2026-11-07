@@ -200,7 +200,14 @@ class CHARGER2(BaseDeviceV2):
                 SignedDecimalField(
                     FieldName.B_IO_POWER, 15546, 0, multiplier=-1
                 ),
-                UIntField(FieldName.BATTERY_SOC, 15584),
+                # The Charger 2 has no battery of its own: register 15584
+                # mirrors the SOC of the power station it is charging, so it is
+                # the same integer percent as the common v2 field and takes the
+                # same 0-100 range. Unbounded it published whatever the register
+                # held -- a 0xFFFF "not reported" word, or a block answer filed
+                # under the wrong register, which this station has been seen to
+                # do -- as a percentage, where every other profile drops it.
+                UIntField(FieldName.BATTERY_SOC, 15584, min=0, max=100),
 
                 DecimalField(FieldName.B_ALT_VOLTAGE, 15539, 1),
                 # Starter battery side. The raw registers read positive while the

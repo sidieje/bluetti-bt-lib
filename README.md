@@ -171,7 +171,7 @@ Example output: `['EB3A', '00:00:00:00:00:00']`
 ### Detect device type by mac address
 
 ```bash
-usage: bluetti-detect [-h] mac
+usage: bluetti-detect [-h] [-v] mac
 
 Detect bluetti devices
 
@@ -180,6 +180,8 @@ positional arguments:
 
 options:
   -h, --help  show this help message and exit
+  -v, --verbose
+              log each recognition probe and how the station answered it
 ```
 
 Example:

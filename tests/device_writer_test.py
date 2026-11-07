@@ -180,8 +180,11 @@ class TestDeviceWriter(unittest.IsolatedAsyncioTestCase):
 
         async def start_notify_completes_handshake(char, callback, **kwargs):
             await original_start_notify(char, callback, **kwargs)
-            # Pretend the key exchange completed so connect() proceeds.
+            # Pretend the key exchange completed so connect() proceeds. A
+            # completed exchange sets both halves of is_ready_for_commands;
+            # setting only the key would leave a session a write has to refuse.
             writer.encryption.secure_aes_key = b"0" * 16
+            writer.encryption.peer_pubkey = object()
             writer.encryption_ready.set()
 
         self.ble_mock.start_notify = start_notify_completes_handshake
@@ -428,3 +431,44 @@ class TestEncryptionReadyWait(unittest.IsolatedAsyncioTestCase):
         # running the whole timeout.
         self.assertGreater(elapsed, 0.5)
         self.assertLess(elapsed, 3.5)
+
+    async def test_unverified_write_is_refused_without_a_session(self):
+        # An unverified write used to skip this wait entirely, so a writer
+        # attached without the reader's session encrypted with a fresh key-less
+        # session and put the result on the wire. A station ignores a command
+        # it cannot decrypt, so the caller was told the write succeeded while
+        # the setting never changed.
+        client = ClientMockNoEncryption()
+        reader_lock = asyncio.Lock()
+        fake_reader = SimpleNamespace(
+            encryption=BluettiEncryption(), polling_lock=reader_lock
+        )
+        writer = DeviceWriter(
+            client,
+            AC180(),
+            DeviceWriterConfig(timeout=1, use_encryption=True),
+            reader_lock,
+            reader=fake_reader,
+        )
+        writer.attach()
+
+        writes = 0
+        original_write_gatt_char = client.write_gatt_char
+
+        async def counting_write_gatt_char(*args, **kwargs):
+            nonlocal writes
+            writes += 1
+            return await original_write_gatt_char(*args, **kwargs)
+
+        client.write_gatt_char = counting_write_gatt_char
+
+        with self.assertLogs(
+            "bluetti_bt_lib.bluetooth.device_writer", level="WARNING"
+        ) as logs:
+            result = await writer.write(FieldName.CTRL_AC.value, True)
+
+        self.assertFalse(result)
+        self.assertEqual(writes, 0)
+        # The log has to name the real reason; a bare failure is what made
+        # this take a hardware trace to find.
+        self.assertIn("Encryption session was not ready", "\n".join(logs.output))

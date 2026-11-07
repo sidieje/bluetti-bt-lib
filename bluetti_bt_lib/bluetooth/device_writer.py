@@ -14,11 +14,10 @@ from .encryption import AES_BLOCK_SIZE, BluettiEncryption, Message, MessageType
 from .bleak_errors import describe_bleak_error
 from ..const import NOTIFY_UUID, WRITE_UUID
 from ..base_devices import BluettiDevice
-from ..fields import EnumField
+from ..fields import EnumField, SharedRegisterControlField
 from ..utils.privacy import mac_loggable
 from .device_reader import DeviceReader, HANDSHAKE_TIMEOUT_SECONDS
 from ..registers import ReadableRegisters, WriteableRegister
-from ..devices.charger2 import CHARGER2, CHARGER2_CONTROL_STATES
 
 
 # A verification delay is a *window*, not a pause: the first read-back goes out
@@ -484,18 +483,24 @@ class DeviceWriter:
             self.logger.error("Verified writes require a DeviceReader")
             return WriteVerificationResult(False, False)
 
-        control_fields = {
-            "ctrl_system_on_off": 0,
-            "ctrl_silent_charging": 1,
-        }
-        is_shared_control = (
-            isinstance(self.bluetti_device, CHARGER2)
-            and field in control_fields
+        # A SharedRegisterControlField is one boolean half of a state word, so
+        # writing it is a read-modify-write of the whole register: the word to
+        # send depends on what is already there, which needs a reader. Which
+        # register, which boolean in the state tuple, and which words are legal
+        # all come from the field itself, so nothing here names a product.
+        shared_control = (
+            field_obj
+            if isinstance(field_obj, SharedRegisterControlField)
+            else None
         )
+        is_shared_control = shared_control is not None
+        device_label = type(self.bluetti_device).__name__
 
         if is_shared_control:
             if not isinstance(value, bool):
-                self.logger.error("Charger 2 control value must be bool")
+                self.logger.error(
+                    "%s control value must be bool: %s=%r", device_label, field, value
+                )
                 return (
                     WriteVerificationResult(False, False)
                     if verify
@@ -503,7 +508,10 @@ class DeviceWriter:
                 )
             if self.reader is None:
                 self.logger.error(
-                    "Charger 2 control requires a reader for register 15600"
+                    "%s control %s requires a reader for register %d",
+                    device_label,
+                    field,
+                    shared_control.address,
                 )
                 return (
                     WriteVerificationResult(False, False)
@@ -552,15 +560,18 @@ class DeviceWriter:
                             )
 
                     if is_shared_control:
+                        address = shared_control.address
                         raw_data = await self.reader.read_locked(
-                            [ReadableRegisters(15600, 1)],
+                            [ReadableRegisters(address, 1)],
                             raw=True,
                         )
-                        raw_word = raw_data.get(15600) if raw_data else None
+                        raw_word = raw_data.get(address) if raw_data else None
 
                         if raw_word is None or len(raw_word) != 2:
                             self.logger.warning(
-                                "Unable to read valid Charger 2 register 15600"
+                                "Unable to read valid %s register %d",
+                                device_label,
+                                address,
                             )
                             return (
                                 WriteVerificationResult(False, False)
@@ -569,11 +580,12 @@ class DeviceWriter:
                             )
 
                         current_word = struct.unpack("!H", raw_word)[0]
-                        current_state = CHARGER2_CONTROL_STATES.get(current_word)
+                        current_state = shared_control.state_table.get(current_word)
 
                         if current_state is None:
                             self.logger.warning(
-                                "Unknown Charger 2 control value: 0x%04X",
+                                "Unknown %s control value: 0x%04X",
+                                device_label,
                                 current_word,
                             )
                             return (
@@ -583,21 +595,22 @@ class DeviceWriter:
                             )
 
                         state = list(current_state)
-                        state[control_fields[field]] = value
+                        state[shared_control.state_index] = value
                         new_state = tuple(state)
 
                         new_word = next(
                             (
                                 word
                                 for word, mapped_state
-                                in CHARGER2_CONTROL_STATES.items()
+                                in shared_control.state_table.items()
                                 if mapped_state == new_state
                             ),
                             None,
                         )
                         if new_word is None:
                             self.logger.error(
-                                "No Charger 2 register value for state %s",
+                                "No %s register value for state %s",
+                                device_label,
                                 new_state,
                             )
                             return (
@@ -606,7 +619,7 @@ class DeviceWriter:
                                 else False
                             )
 
-                        command = WriteableRegister(15600, new_word)
+                        command = WriteableRegister(address, new_word)
 
                     command_bytes = bytes(command)
                     if self.config.use_encryption:
@@ -678,11 +691,12 @@ class DeviceWriter:
                         None when the attempt produced no usable answer.
                         """
                         if is_shared_control:
+                            address = shared_control.address
                             raw_data = await self.reader.read_locked(
-                                [ReadableRegisters(15600, 1)],
+                                [ReadableRegisters(address, 1)],
                                 raw=True,
                             )
-                            raw_word = raw_data.get(15600) if raw_data else None
+                            raw_word = raw_data.get(address) if raw_data else None
 
                             if raw_word is None or len(raw_word) != 2:
                                 return None
@@ -690,23 +704,26 @@ class DeviceWriter:
                             actual_word = struct.unpack("!H", raw_word)[0]
 
                             self.logger.debug(
-                                "Charger 2 register 15600 read-back: "
+                                "%s register %d read-back: "
                                 "raw=%s decoded=0x%04X expected_field=%s "
                                 "requested=%r",
+                                device_label,
+                                address,
                                 raw_word.hex(),
                                 actual_word,
                                 field,
                                 value,
                             )
 
-                            if actual_word not in CHARGER2_CONTROL_STATES:
+                            if actual_word not in shared_control.state_table:
                                 self.logger.warning(
-                                    "Unknown Charger 2 read-back value: 0x%04X",
+                                    "Unknown %s read-back value: 0x%04X",
+                                    device_label,
                                     actual_word,
                                 )
                                 return None
 
-                            return self.bluetti_device.parse(15600, raw_word)
+                            return self.bluetti_device.parse(address, raw_word)
 
                         return await self.reader.read_locked(
                             [
@@ -737,7 +754,7 @@ class DeviceWriter:
                         elif attempts == 1:
                             self.logger.warning(
                                 "Write sent, but %s could not be read back",
-                                "register 15600"
+                                f"register {shared_control.address}"
                                 if is_shared_control
                                 else f"field {field}",
                             )

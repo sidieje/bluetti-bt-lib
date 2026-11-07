@@ -8,8 +8,9 @@ from bluetti_bt_lib.fields import (
     DecimalField,
     EnumField,
     SelectField,
-    StringField,
     SerialNumberField,
+    SharedRegisterControlField,
+    StringField,
     UIntField,
     FieldName,
     SwitchField,
@@ -394,3 +395,43 @@ class TestBluettiDevice(unittest.TestCase):
 
         self.assertEqual(len(device.get_select_fields()), 1)
         self.assertEqual(len(device.get_sensor_fields()), 1)
+
+
+class TestRequiresReadModifyWrite(unittest.TestCase):
+    """Which writes a caller cannot build on its own.
+
+    A caller that only has a field name - the write script, which has to decide
+    how to build its writer before it has one - asks here, so the answer comes
+    from the field rather than from a list of names someone has to keep current.
+    """
+
+    STATES = {0x1234: (False, False), 0x2345: (True, False)}
+
+    def setUp(self):
+        self.device = BluettiDevice(
+            fields=[
+                SharedRegisterControlField(
+                    FieldName.CTRL_AC, 200, self.STATES, state_index=0
+                ),
+                SharedRegisterControlField(
+                    FieldName.CTRL_DC, 200, self.STATES, state_index=1
+                ),
+                SwitchField(FieldName.CTRL_CHARGING_MODE, 180),
+            ],
+            pack_fields=[],
+            max_packs=0,
+        )
+
+    def test_both_halves_of_a_shared_word_are_included(self):
+        for name in (FieldName.CTRL_AC.value, FieldName.CTRL_DC.value):
+            with self.subTest(name=name):
+                self.assertTrue(self.device.requires_read_modify_write(name))
+
+    def test_an_ordinary_switch_is_not(self):
+        self.assertFalse(
+            self.device.requires_read_modify_write(FieldName.CTRL_CHARGING_MODE.value)
+        )
+
+    def test_a_field_the_device_does_not_have_is_not(self):
+        self.assertFalse(self.device.requires_read_modify_write("ctrl_ac_on"))
+        self.assertFalse(self.device.requires_read_modify_write(""))

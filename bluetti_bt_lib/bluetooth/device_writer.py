@@ -168,6 +168,15 @@ class DeviceWriter:
         write can never be on the wire at the same time. A writer attached with
         no reader in sight cannot be checked, so it is the caller's job to hand
         it the reader's lock.
+
+        Under DeviceWriterConfig(use_encryption=True) the session argument is
+        not optional in practice: pass the reader's own BluettiEncryption so
+        the writer encrypts commands with the keys the reader negotiated. The
+        argument stays optional because a shared link may not use encryption at
+        all. Attaching without a session on an encrypted link leaves this
+        writer holding a fresh un-keyed session, and every write is then
+        refused by _await_encryption_ready() with the reason in the log rather
+        than sent out unencrypted.
         """
         self._connected = True
         self._attached = True
@@ -180,7 +189,7 @@ class DeviceWriter:
         self.encryption_ready.set()
 
     async def _await_encryption_ready(self) -> bool:
-        """Wait for the handshake to finish before a verified write.
+        """Wait for the handshake to finish before an encrypted write.
 
         The wait is bounded. An unbounded loop holds the polling lock until the
         whole write times out, which leaves the caller with a bare timeout and
@@ -192,7 +201,13 @@ class DeviceWriter:
         wait_for = min(HANDSHAKE_TIMEOUT_SECONDS, self.config.timeout / 2)
         deadline = monotonic() + wait_for
 
-        while not self.reader.encryption.is_ready_for_commands:
+        # Wait on the session this writer actually encrypts with, not on the
+        # reader's. On a shared connection attach() borrowed that very object,
+        # so the two are one and the same whenever a session was handed over;
+        # checking self.encryption additionally refuses a writer that was
+        # attached without one, which otherwise passed here and then failed
+        # inside aes_encrypt() with a key of None.
+        while not self.encryption.is_ready_for_commands:
             if monotonic() >= deadline:
                 self.logger.warning(
                     "Encryption session was not ready within %ss, so the write "
@@ -524,9 +539,17 @@ class DeviceWriter:
                                 else False
                             )
 
-                    if verify and self.config.use_encryption:
+                    if self.config.use_encryption:
+                        # Any encrypted write needs a session, not only a
+                        # verified one. An unverified write used to skip this
+                        # and reach aes_encrypt() with no key, which surfaced
+                        # as a TypeError logged as a generic write failure.
                         if not await self._await_encryption_ready():
-                            return WriteVerificationResult(False, False)
+                            return (
+                                WriteVerificationResult(False, False)
+                                if verify
+                                else False
+                            )
 
                     if is_shared_control:
                         raw_data = await self.reader.read_locked(
@@ -782,7 +805,16 @@ class DeviceWriter:
                     else False
                 )
             except Exception as err:
+                # Not only a BleakError can leave a link untrustworthy. An
+                # error part way through a write means a frame may have gone
+                # out whose fate is unknown, and a station that answered with
+                # something this code could not parse usually answers the next
+                # write the same way. Rebuild like the BleakError branch, which
+                # leaves an attached writer's shared client alone: for one of
+                # those, _mark_disconnected only clears this writer's state and
+                # the client's owner reconnects.
                 self.logger.warning("Error during write or verification: %s", err)
+                await self._mark_disconnected()
                 return (
                     WriteVerificationResult(write_succeeded, False)
                     if verify

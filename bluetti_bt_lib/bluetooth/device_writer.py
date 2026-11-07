@@ -913,15 +913,24 @@ class DeviceWriter:
         if decrypted_type == MessageType.PEER_PUBKEY:
             try:
                 response = self.encryption.msg_peer_pubkey(decrypted)
-            except InvalidSignature:
-                # Usually the stale IV the branch above exists to prevent. The
-                # session cannot be salvaged, so report the handshake as failed
-                # instead of waiting on keys that never settle, and drop the
-                # session the link would otherwise keep encrypting with. Only a
-                # new connection makes the peer challenge again; tearing the
-                # link down is not this writer's job, since the reader owns it
-                # wherever this handler does not run at all.
-                self.logger.warning("Peer pubkey signature rejected")
+            except (InvalidSignature, ValueError) as err:
+                # Usually the stale IV the branch above exists to prevent. A
+                # ValueError instead means the frame never got that far: it was
+                # too short or too long to hold a signed pubkey at all
+                # (verify_and_extract_signed_data() wants exactly 128 bytes), or
+                # the pubkey inside it will not parse. It used to escape into
+                # bleak's detached callback dispatch, where it was lost with the
+                # handshake left marked healthy, so connect() waited out its
+                # whole timeout for keys that could no longer arrive.
+                # The session cannot be salvaged either way, so report the
+                # handshake as failed instead of waiting on keys that never
+                # settle, and drop the session the link would otherwise keep
+                # encrypting with. Only a new connection makes the peer challenge
+                # again; tearing the link down is not this writer's job, since
+                # the reader owns it wherever this handler does not run at all.
+                self.logger.warning(
+                    "Peer pubkey rejected (%s)", str(err) or "bad signature"
+                )
                 self.encryption.reset()
                 self.encrypted_buffer.clear()
                 self.encryption_ready.clear()

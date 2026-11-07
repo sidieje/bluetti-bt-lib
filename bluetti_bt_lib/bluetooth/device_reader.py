@@ -1607,12 +1607,23 @@ class DeviceReader:
                         peer_pubkey_response = self.encryption.msg_peer_pubkey(
                             decrypted
                         )
-                    except InvalidSignature:
-                        # Almost always a stale IV: drop the session and let
-                        # the next connection restart the exchange rather than
-                        # leaving the link wedged.
+                    except (InvalidSignature, ValueError) as err:
+                        # A bad signature is almost always a stale IV. A
+                        # ValueError comes from the check itself rather than the
+                        # crypto: the frame was too short or too long to hold a
+                        # signed pubkey at all -- the length guard in
+                        # verify_and_extract_signed_data() wants exactly 128
+                        # bytes -- or the pubkey inside it will not parse.
+                        # Neither can be salvaged, and letting it raise was
+                        # worse than ignoring the frame: bleak runs this callback
+                        # as a detached task, so the exception was lost, the
+                        # handshake flag stayed clear, and the read sat out its
+                        # timeout on a link that could never carry a command.
+                        # Drop the session and let the next connection restart
+                        # the exchange.
                         self.logger.warning(
-                            "Peer pubkey signature rejected, reconnecting"
+                            "Peer pubkey rejected (%s), reconnecting",
+                            str(err) or "bad signature",
                         )
                         self.encryption.reset()
                         self.encrypted_buffer.clear()

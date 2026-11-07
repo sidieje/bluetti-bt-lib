@@ -8,6 +8,7 @@ from cryptography.hazmat.primitives.asymmetric import ec
 
 from bluetti_bt_lib import DeviceReader
 from bluetti_bt_lib.base_devices import BaseDeviceV1
+from bluetti_bt_lib.bluetooth import DeviceWriter, DeviceWriterConfig
 from bluetti_bt_lib.bluetooth import encryption as encryption_mod
 from bluetti_bt_lib.bluetooth.device_reader import DeviceReaderConfig
 from bluetti_bt_lib.bluetooth.encryption import (
@@ -16,7 +17,9 @@ from bluetti_bt_lib.bluetooth.encryption import (
     Message,
     MessageType,
     hexsum,
+    pubkey_to_bytes,
 )
+from bluetti_bt_lib.devices.ac180 import AC180
 
 
 def encrypted_frame(encryption, body: bytes) -> bytearray:
@@ -32,6 +35,8 @@ def plaintext_frame(body: bytes) -> bytearray:
 
 class WriteCapturingClient:
     is_connected = True
+    # A GATT peer always has an address, and the writer names its link with one.
+    address = "00:11:00:11:00:11"
 
     def __init__(self):
         self.writes = []
@@ -61,20 +66,47 @@ class LinkClient:
         self.is_connected = False
 
 
+def open_session(encryption: BluettiEncryption) -> None:
+    """Put a session in the state a finished key exchange leaves behind."""
+    encryption.unsecure_aes_key = bytes(16)
+    encryption.unsecure_aes_iv = bytes(16)
+    encryption.secure_aes_key = bytes(range(16))
+    encryption.peer_pubkey = object()
+
+
+def encrypted_reader(client=None) -> DeviceReader:
+    """A reader with a session already up, so the encrypted path is reachable."""
+    reader = DeviceReader(
+        "00:11:00:11:00:11",
+        BaseDeviceV1(),
+        asyncio.Future,
+        config=DeviceReaderConfig(use_encryption=True),
+    )
+    reader.client = client or WriteCapturingClient()
+    open_session(reader.encryption)
+    return reader
+
+
+# A signed pubkey is 64 bytes of key plus a 64 byte signature, and
+# verify_and_extract_signed_data() rejects anything else. These are the lengths
+# a truncated or padded frame really arrives with, and every one of them used to
+# raise ValueError out of the notification callback.
+MALFORMED_PUBKEY_LENGTHS = (0, 10, 127)
+
+
+def malformed_pubkey_frame(
+    encryption: BluettiEncryption, payload_len: int
+) -> bytearray:
+    """A correctly encrypted PEER_PUBKEY whose payload cannot hold a pubkey."""
+    return encrypted_frame(
+        encryption,
+        bytes([MessageType.PEER_PUBKEY.value, 0]) + bytes(payload_len),
+    )
+
+
 class TestKeyExchange(unittest.IsolatedAsyncioTestCase):
     def make_reader(self, client=None):
-        reader = DeviceReader(
-            "00:11:00:11:00:11",
-            BaseDeviceV1(),
-            asyncio.Future,
-            config=DeviceReaderConfig(use_encryption=True),
-        )
-        reader.client = client or WriteCapturingClient()
-        # A session partway through: the exchange can restart in-band.
-        reader.encryption.unsecure_aes_key = bytes(16)
-        reader.encryption.unsecure_aes_iv = bytes(16)
-        reader.encryption.secure_aes_key = bytes(range(16))
-        return reader
+        return encrypted_reader(client)
 
     async def test_challenge_inside_encrypted_channel_refreshes_iv(self):
         # The peer pubkey is verified against unsecure_aes_iv, so a challenge
@@ -243,6 +275,175 @@ class TestHandshakeAbandoned(unittest.IsolatedAsyncioTestCase):
         reader.handshake_failed = True
 
         self.assertFalse(await reader._await_handshake())
+
+
+class TestMalformedPeerPubkey(unittest.IsolatedAsyncioTestCase):
+    """A malformed pubkey frame has to fail the handshake, not the callback.
+
+    ``msg_peer_pubkey()`` only ever caught ``InvalidSignature``, but the length
+    guard in ``verify_and_extract_signed_data()`` raises ``ValueError`` for any
+    frame that is not exactly 128 bytes, and a key that will not parse raises it
+    too. That escaped ``_notification_handler``, and bleak dispatches the
+    callback as a detached task: the exception was dropped, ``handshake_failed``
+    stayed clear, and the read sat out its timeout on a link that could never
+    carry a command -- strictly worse than the signature path, which at least
+    reports a failure.
+    """
+
+    async def test_a_malformed_pubkey_does_not_kill_the_callback(self):
+        for length in MALFORMED_PUBKEY_LENGTHS:
+            with self.subTest(payload_length=length):
+                reader = encrypted_reader()
+                frame = malformed_pubkey_frame(reader.encryption, length)
+
+                await reader._notification_handler(0, frame)
+
+                self.assertEqual(reader.client.writes, [])
+                self.assertEqual(reader.notify_response, bytearray())
+
+    async def test_a_malformed_pubkey_fails_the_handshake(self):
+        for length in MALFORMED_PUBKEY_LENGTHS:
+            with self.subTest(payload_length=length):
+                reader = encrypted_reader()
+                frame = malformed_pubkey_frame(reader.encryption, length)
+
+                await reader._notification_handler(0, frame)
+
+                self.assertTrue(reader.handshake_failed)
+
+    async def test_a_malformed_pubkey_drops_the_session(self):
+        # The session has to go with the failure. Keeping the keys would let
+        # the link carry on encrypting commands with a session the peer has no
+        # reason to still hold, which is why the signature path resets too.
+        for length in MALFORMED_PUBKEY_LENGTHS:
+            with self.subTest(payload_length=length):
+                reader = encrypted_reader()
+                frame = malformed_pubkey_frame(reader.encryption, length)
+
+                await reader._notification_handler(0, frame)
+
+                self.assertFalse(reader.encryption.is_ready_for_commands)
+                self.assertIsNone(reader.encryption.unsecure_aes_key)
+                self.assertIsNone(reader.encryption.unsecure_aes_iv)
+                self.assertIsNone(reader.encryption.secure_aes_key)
+                self.assertIsNone(reader.encryption.peer_pubkey)
+                self.assertEqual(reader.encrypted_buffer, bytearray())
+
+    async def test_a_malformed_pubkey_names_the_reason(self):
+        # Returning without a word would leave a stalled read with nothing
+        # naming the cause, which is how this went unnoticed in the field.
+        for length in MALFORMED_PUBKEY_LENGTHS:
+            with self.subTest(payload_length=length):
+                reader = encrypted_reader()
+                frame = malformed_pubkey_frame(reader.encryption, length)
+
+                with self.assertLogs(reader.logger, level="WARNING") as logs:
+                    await reader._notification_handler(0, frame)
+
+                self.assertTrue(
+                    any(
+                        "Peer pubkey rejected (Unexpected message length)" in line
+                        for line in logs.output
+                    ),
+                    logs.output,
+                )
+
+    async def test_the_reader_keeps_working_after_a_malformed_pubkey(self):
+        # One unusable frame must not end the exchange: the station retries, and
+        # the challenge that restarts the session still gets its answer.
+        reader = encrypted_reader()
+        await reader._notification_handler(
+            0, malformed_pubkey_frame(reader.encryption, 10)
+        )
+
+        challenge = plaintext_frame(
+            bytes([MessageType.CHALLENGE.value, 0]) + b"\x01\x02\x03\x04"
+        )
+        await reader._notification_handler(0, challenge)
+
+        self.assertEqual(len(reader.client.writes), 1)
+        self.assertIsNotNone(reader.encryption.unsecure_aes_key)
+
+    async def test_a_full_length_bad_signature_still_reports_a_bad_signature(self):
+        # The catch widened, the diagnosis must not blur: 128 bytes of garbage
+        # reaches the crypto and comes back InvalidSignature, which has no
+        # message of its own to log.
+        reader = encrypted_reader()
+        frame = encrypted_frame(
+            reader.encryption,
+            bytes([MessageType.PEER_PUBKEY.value, 0])
+            + bytes([1]) * 64
+            + bytes([1]) * 64,
+        )
+
+        with self.assertLogs(reader.logger, level="WARNING") as logs:
+            await reader._notification_handler(0, frame)
+
+        self.assertTrue(
+            any(
+                "Peer pubkey rejected (bad signature)" in line
+                for line in logs.output
+            ),
+            logs.output,
+        )
+        self.assertTrue(reader.handshake_failed)
+        self.assertIsNone(reader.encryption.unsecure_aes_key)
+
+    async def test_a_signed_pubkey_is_still_answered(self):
+        # The frame this test feeds is the shape a real station sends; only the
+        # signature check is stood in for, since the station's signing key lives
+        # in the library and no test can produce a signature it accepts.
+        reader = encrypted_reader()
+        frame = encrypted_frame(
+            reader.encryption,
+            bytes([MessageType.PEER_PUBKEY.value, 0]) + bytes(64) + bytes(64),
+        )
+        # A real key, because the reply has to agree on a curve point: an all
+        # zero payload is not on secp256r1 and would fail for the wrong reason.
+        peer_bytes = pubkey_to_bytes(
+            ec.generate_private_key(ec.SECP256R1()).public_key()
+        )
+
+        with mock.patch.object(
+            encryption_mod,
+            "verify_and_extract_signed_data",
+            return_value=memoryview(peer_bytes),
+        ):
+            await reader._notification_handler(0, frame)
+
+        self.assertEqual(len(reader.client.writes), 1)
+        self.assertFalse(reader.handshake_failed)
+        self.assertIsNotNone(reader.encryption.my_privkey)
+
+    async def test_reader_and_writer_fail_the_same_way(self):
+        # Two handlers over two code paths, one defect. The writer owns an extra
+        # event and a ready flag, but the outcome the caller depends on -- a
+        # failed handshake and no session left behind -- has to be identical.
+        reader = encrypted_reader()
+        writer = DeviceWriter(
+            WriteCapturingClient(),
+            AC180(),
+            DeviceWriterConfig(timeout=5, use_encryption=True),
+            asyncio.Lock(),
+        )
+        open_session(writer.encryption)
+        # One frame has to be validly encrypted for both of them.
+        self.assertEqual(
+            writer.encryption.secure_aes_key, reader.encryption.secure_aes_key
+        )
+        frame = malformed_pubkey_frame(reader.encryption, 127)
+
+        await reader._notification_handler(0, bytearray(frame))
+        await writer._notification_handler(0, bytearray(frame))
+
+        self.assertTrue(reader.handshake_failed)
+        self.assertTrue(writer.handshake_failed)
+        self.assertTrue(writer._handshake_failed_event.is_set())
+        self.assertFalse(writer.encryption_ready.is_set())
+        self.assertFalse(reader.encryption.is_ready_for_commands)
+        self.assertFalse(writer.encryption.is_ready_for_commands)
+        self.assertEqual(reader.client.writes, [])
+        self.assertEqual(writer.client.writes, [])
 
 
 class TestRepeatedPeerPubkey(unittest.TestCase):

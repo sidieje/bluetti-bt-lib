@@ -29,12 +29,20 @@ def start():
     """Entrypoint."""
     parser = argparse.ArgumentParser(description="Detect bluetti devices")
     parser.add_argument("mac", type=str, help="Mac-address of the powerstation")
+    parser.add_argument(
+        "-v",
+        "--verbose",
+        action="store_true",
+        help="log each recognition probe and how the station answered it",
+    )
     args = parser.parse_args()
 
     if args.mac is None:
         parser.print_help()
         return
 
-    logging.basicConfig(level=logging.WARNING)
+    # The probes log at DEBUG, which is the only way to see how long a key
+    # exchange took to appear and which register reported the type.
+    logging.basicConfig(level=logging.DEBUG if args.verbose else logging.WARNING)
 
     asyncio.run(async_detect_device(args.mac))

@@ -6,7 +6,7 @@ from ..enums import ReverseChargingMode
 from ..fields import (
     BoolField,
     EnumField,
-    SwitchField,
+    SharedRegisterControlField,
     FieldName,
     UIntField,
     DecimalField,
@@ -27,31 +27,13 @@ CHARGER2_CONTROL_STATES = {
 }
 
 
-class Charger2ControlField(SwitchField):
-    """Decode one boolean control from Charger 2 register 15600."""
+class Charger2ControlField(SharedRegisterControlField):
+    """One boolean half of Charger 2 register 15600."""
 
     def __init__(self, name: FieldName, address: int, state_index: int):
-        super().__init__(name, address)
-        self.state_index = state_index
-
-    def parse(self, data: bytes) -> bool:
-        value = struct.unpack("!H", data)[0]
-
-        try:
-            state = CHARGER2_CONTROL_STATES[value]
-        except KeyError:
-            raise ValueError(
-                f"Charger 2 reads 0x{value:04X} at register {self.address},"
-                " which is not a control word this integration knows"
-            ) from None
-
-        return state[self.state_index]
-
-    def is_writeable(self) -> bool:
-        return True
-
-    def allowed_write_type(self, value) -> bool:
-        return isinstance(value, bool)
+        super().__init__(
+            name, address, CHARGER2_CONTROL_STATES, state_index=state_index
+        )
 
 
 class Charger2SystemSwitchField(Charger2ControlField):

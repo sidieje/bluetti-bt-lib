@@ -10,6 +10,7 @@ from ..fields import (
     PulseSwitchField,
     SelectField,
     NumberField,
+    SharedRegisterControlField,
     FieldName,
 )
 
@@ -348,6 +349,20 @@ class BluettiDevice:
             _LOGGER.debug(
                 "%s parses again after %d skipped read(s)", key, last[1]
             )
+
+    def requires_read_modify_write(self, name: str) -> bool:
+        """True when writing this field means rewriting a whole register.
+
+        A SharedRegisterControlField is one half of a state word, so the word to
+        send depends on what the register already holds and the writer needs a
+        reader to ask. A caller that only has a field name - the write script,
+        which decides how to build its writer before it has one - asks here
+        instead of naming the fields it has seen before.
+        """
+        return any(
+            f.name == name and isinstance(f, SharedRegisterControlField)
+            for f in self.fields
+        )
 
     def build_write_command(self, name: str, value: Any) -> WriteableRegister | None:
         """Build a command to write values to the device"""

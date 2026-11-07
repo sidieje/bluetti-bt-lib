@@ -10,7 +10,6 @@ from bleak import BleakClient
 
 from ..bluetooth import DeviceWriter, DeviceWriterConfig
 from ..bluetooth.device_reader import DeviceReader, DeviceReaderConfig
-from ..devices.charger2 import CHARGER2
 from ..utils.device_builder import build_device
 from bleak.exc import BleakError
 
@@ -27,11 +26,9 @@ async def async_write(
 
     print("Client created")
 
-    control_fields = {
-        "ctrl_system_on_off",
-        "ctrl_silent_charging",
-    }
-    needs_reader = isinstance(built, CHARGER2) and field in control_fields
+    # A field that is half of a shared state word needs a reader to supply the
+    # rest of that word, so the writer has to be built on the reader's link.
+    needs_reader = built.requires_read_modify_write(field)
 
     if needs_reader:
         # The reader and writer must share one BLE connection and lock.

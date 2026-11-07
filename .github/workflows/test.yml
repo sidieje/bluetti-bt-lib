@@ -17,6 +17,8 @@ jobs:
         pip install -r requirements.txt
     - name: Run unittests
       run: python3 -m unittest discover -s tests -p "*.py"
+    - name: Run bluetooth unittests
+      run: python3 -m unittest discover -s tests/bluetooth -p "*.py"
     - name: Run field unittests
       run: python3 -m unittest discover -s tests/fields -p "*.py"
     - name: Run register unittests

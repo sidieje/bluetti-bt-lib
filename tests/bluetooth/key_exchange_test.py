@@ -1,4 +1,5 @@
 import asyncio
+import re
 import unittest
 from unittest import mock
 
@@ -144,6 +145,23 @@ class TestKeyExchange(unittest.IsolatedAsyncioTestCase):
 
         self.assertTrue(reader.handshake_failed)
 
+    async def test_corrupt_frame_still_reaches_the_exchange(self):
+        # Issue #51 pins today's behaviour: a bad checksum is logged, but the
+        # frame is used anyway. This test exists to fail the day we decide to
+        # reject it, so that the change has to be a deliberate one.
+        reader = self.make_reader()
+        frame = plaintext_frame(
+            bytes([MessageType.CHALLENGE.value, 0]) + b"\x01\x02\x03\x04"
+        )
+        frame[-3] ^= 0xFF
+
+        with mock.patch.object(
+            reader.encryption, "msg_challenge", return_value=b"\x00"
+        ) as msg_challenge:
+            await reader._notification_handler(0, frame)
+
+        msg_challenge.assert_called_once()
+        self.assertEqual(len(reader.client.writes), 1)
 
     async def test_repeated_frame_is_answered_once(self):
         # Before the dedupe, an AP300 re-delivered 3 distinct pubkeys 25 times.
@@ -318,6 +336,108 @@ class TestEncryptionReset(unittest.TestCase):
         self.assertIsNone(encryption.secure_aes_key)
         self.assertIsNone(encryption.peer_pubkey)
         self.assertFalse(encryption.is_ready_for_commands)
+
+
+class TestChecksum(unittest.TestCase):
+    """Issue #51: verify_checksum() logged "Checksum error!" and then logged
+    "Checksum OK" for the same frame, and returned nothing, so every caller read
+    a clean verification out of a frame that had failed. This covers the report;
+    whether a mismatching frame should be rejected at all is still open."""
+
+    @staticmethod
+    def challenge_frame(body: bytes = b"\x01\x02") -> bytes:
+        return bytes(plaintext_frame(bytes([MessageType.CHALLENGE.value, 0]) + body))
+
+    @staticmethod
+    def corrupt(frame: bytes) -> bytes:
+        # Flip the last body byte, leaving the checksum itself untouched.
+        broken = bytearray(frame)
+        broken[-3] ^= 0xFF
+        return bytes(broken)
+
+    def test_valid_frame_verifies(self):
+        message = Message(self.challenge_frame())
+
+        with self.assertLogs(encryption_mod._LOGGER, level="DEBUG") as logs:
+            self.assertTrue(message.verify_checksum())
+
+        self.assertEqual(len(logs.output), 1)
+        self.assertIn("Checksum OK", logs.output[0])
+
+    def test_corrupt_body_fails(self):
+        message = Message(self.corrupt(self.challenge_frame()))
+
+        with self.assertLogs(encryption_mod._LOGGER, level="ERROR") as logs:
+            self.assertFalse(message.verify_checksum())
+
+        # The misleading success line is what made the failure invisible.
+        self.assertEqual(len(logs.output), 1)
+        self.assertNotIn("Checksum OK", logs.output[0])
+
+    def test_mismatch_names_the_link_and_both_checksums(self):
+        message = Message(self.corrupt(self.challenge_frame()))
+
+        with self.assertLogs(encryption_mod._LOGGER, level="ERROR") as logs:
+            message.verify_checksum("BaseDeviceV1 00:11:00:11:00:11 plaintext")
+
+        detail = logs.output[0]
+        self.assertIn("[BaseDeviceV1 00:11:00:11:00:11 plaintext]", detail)
+        self.assertIn("type=CHALLENGE", detail)
+        self.assertIn("received=", detail)
+        self.assertIn("computed=", detail)
+        # Length replaces the frame: enough to tie a bad frame to a link and a
+        # moment, without carrying anything that decrypts.
+        self.assertIn("length=8", detail)
+        self.assertNotIn("frame=", detail)
+
+    def test_mismatch_omits_the_frame_and_the_iv_seed(self):
+        # A plaintext CHALLENGE body is type, flags, then the 4-byte IV seed,
+        # and msg_challenge() turns that seed into the unsecure session key with
+        # md5(seed[::-1]) XOR a constant from the library. Logging the frame at
+        # ERROR therefore used to hand over a working key on a corrupted frame.
+        seed = b"\xde\xa0\xbe\xef"
+        frame = bytearray(
+            self.challenge_frame(bytes([MessageType.CHALLENGE.value, 0]) + seed)
+        )
+        # Corrupt the flags byte, not the seed: TestChecksum.corrupt() flips the
+        # last body byte, which here is part of the seed, and a test that only
+        # ever sees the seed mangled passes against the leak it exists to catch.
+        frame[3] ^= 0xFF
+        message = Message(bytes(frame))
+
+        with self.assertLogs(encryption_mod._LOGGER, level="ERROR") as logs:
+            message.verify_checksum("BaseDeviceV1 00:11:00:11:00:11 plaintext")
+
+        detail = logs.output[0]
+        self.assertNotIn(seed.hex(), detail)
+        self.assertNotIn(seed[::-1].hex(), detail)
+        self.assertNotIn(bytes(frame).hex(), detail)
+
+    def test_mismatch_leaks_no_blob_a_frame_could_hide_in(self):
+        # Guards the shape rather than one seed: the two checksums are 4 hex
+        # characters each and the MAC is colon-separated, so anything long
+        # enough here is frame or payload material that has crept back in.
+        frame = self.challenge_frame(
+            bytes([MessageType.CHALLENGE.value, 0]) + bytes(range(12))
+        )
+        message = Message(self.corrupt(frame))
+
+        with self.assertLogs(encryption_mod._LOGGER, level="ERROR") as logs:
+            message.verify_checksum("BaseDeviceV1 00:11:00:11:00:11 decrypted")
+
+        self.assertIsNone(re.search(r"[0-9a-f]{12,}", logs.output[0]), logs.output[0])
+
+    def test_unknown_type_is_labelled_without_raising(self):
+        # The log line runs before the caller has accepted the type byte, so it
+        # cannot be the thing that raises out of a notification callback.
+        message = Message(bytes(plaintext_frame(bytes([9, 0]) + b"\x01\x02")))
+
+        self.assertEqual(message.type_label(), "UNKNOWN(9)")
+
+    def test_empty_body_is_labelled_without_raising(self):
+        message = Message(KEX_MAGIC + hexsum(b"", 2))
+
+        self.assertEqual(message.type_label(), "EMPTY")
 
 
 if __name__ == "__main__":

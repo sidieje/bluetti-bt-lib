@@ -218,14 +218,6 @@ class BluettiDevice:
         """Returns all registers which are tested with the readall command"""
         raise NotImplementedError
 
-    def get_device_type_registers(self) -> List[ReadableRegisters]:
-        """Returns the register storing the type of the device"""
-        raise NotImplementedError
-
-    def get_device_sn_registers(self) -> List[ReadableRegisters]:
-        """Returns the register storing the serial number of the device"""
-        raise NotImplementedError
-
     def get_iot_version(self) -> int:
         """Get the IoT protocol version of the device"""
         raise NotImplementedError

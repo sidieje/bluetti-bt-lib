@@ -33,16 +33,6 @@ class BaseDeviceV2(BluettiDevice):
     def get_full_registers_range(self) -> List[ReadableRegisters]:
         return [ReadableRegisters(i, 10) for i in range(0, 20000, 10)]
 
-    def get_device_type_registers(self) -> List[ReadableRegisters]:
-        return [
-            ReadableRegisters(110, 6),
-        ]
-
-    def get_device_sn_registers(self) -> List[ReadableRegisters]:
-        return [
-            ReadableRegisters(116, 4),
-        ]
-
     def get_iot_version(self) -> int:
         return 2
 

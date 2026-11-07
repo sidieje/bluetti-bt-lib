@@ -2,6 +2,7 @@ import unittest
 
 from decimal import Decimal
 
+from bluetti_bt_lib.base_devices import BaseDeviceV2
 from bluetti_bt_lib.base_devices.bluetti_device import PERSISTENT_SKIP_POLLS
 from bluetti_bt_lib.devices.charger2 import (
     CHARGER2,
@@ -291,6 +292,43 @@ class TestCharger2(unittest.TestCase):
         self.assertIsNone(mode.compose(0x046A, "TURBO"))
         self.assertIsNone(switch.compose(0x5529, True))
         self.assertIsNone(mode.compose(0x5529, "PULSE"))
+
+    def test_battery_soc_is_the_power_station_percent(self):
+        # Register 15584 mirrors the SOC of the station the Charger 2 is
+        # charging, so a whole percent in range is reported as it is.
+        name = FieldName.BATTERY_SOC.value
+        for hex_value, percent in (("0000", 0), ("004B", 75), ("0064", 100)):
+            with self.subTest(register_value=hex_value):
+                parsed = self.device.parse(15584, bytes.fromhex(hex_value))
+                self.assertEqual(parsed[name], percent)
+
+    def test_battery_soc_outside_the_percent_range_is_dropped(self):
+        # A 0xFFFF "not reported" word, a 101 from a station mid-update, or a
+        # block answer filed under the wrong register used to go out as a
+        # percentage. It is left out instead, which is what every other profile
+        # does with its SOC, and leaves the entity unknown rather than wrong.
+        for hex_value in ("0065", "012C", "5529", "FFFF"):
+            with self.subTest(register_value=hex_value):
+                parsed = self.device.parse(15584, bytes.fromhex(hex_value))
+                self.assertNotIn(FieldName.BATTERY_SOC.value, parsed)
+
+    def test_battery_soc_range_matches_the_common_v2_field(self):
+        # The Charger 2 sets include_common_fields=False, so it loses the
+        # shared SOC definition and has to agree with it by hand.
+        soc = next(
+            f
+            for f in self.device.get_sensor_fields()
+            if f.name == FieldName.BATTERY_SOC.value
+        )
+        common = next(
+            f
+            for f in BaseDeviceV2().get_sensor_fields()
+            if f.name == FieldName.BATTERY_SOC.value
+        )
+
+        self.assertEqual(soc.address, 15584)
+        self.assertEqual(common.address, 102)
+        self.assertEqual((soc.min, soc.max), (common.min, common.max))
 
     def test_starter_battery_values_are_signed(self):
         # Raw dumps from a Charger 2: 0x1760/0x030A while the alternator

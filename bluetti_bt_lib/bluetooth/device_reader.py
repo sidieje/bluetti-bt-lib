@@ -371,7 +371,11 @@ class DeviceReader:
             # instead of reporting it as an ordinary connection failure.
             await self._cleanup_failed_connect()
             raise
-        except BaseException as err:
+        except Exception as err:
+            # Exception, not BaseException: KeyboardInterrupt and SystemExit
+            # end the process, and GeneratorExit discards this coroutine. None
+            # of them is a connection failure, and awaiting teardown inside one
+            # turns the shutdown into "coroutine ignored GeneratorExit".
             self.logger.warning("Unknown error during connect: %s", err)
             await self._cleanup_failed_connect()
             return False
@@ -929,7 +933,9 @@ class DeviceReader:
                 # as TimeoutError instead and is resynced above.
                 await self._resync_link()
                 raise
-            except BaseException as err:
+            except Exception as err:
+                # Exception, not BaseException: an interrupted or discarded
+                # read is not a fault to report as a missing answer.
                 self.logger.warning("Unknown error %s", err)
                 return None
 
@@ -1006,7 +1012,9 @@ class DeviceReader:
             # Same as read(): resync rather than forget a link that may be up.
             await self._resync_link()
             raise
-        except BaseException as err:
+        except Exception as err:
+            # Exception, not BaseException: an interrupted or discarded read
+            # is not a fault to report as a missing answer.
             self.logger.warning("Error reading selected registers: %s", err)
             return None
 

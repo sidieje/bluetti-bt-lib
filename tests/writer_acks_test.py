@@ -16,10 +16,16 @@ modbus_crc = mkCrcFun("modbus")
 
 
 def open_session(writer):
-    """Stand-in for a completed key exchange."""
+    """Stand-in for a completed key exchange.
+
+    A finished exchange leaves both halves of is_ready_for_commands set, so
+    this sets the peer pubkey too; a session without it is one a write has to
+    refuse rather than encrypt with.
+    """
     writer.encryption.unsecure_aes_key = bytes(16)
     writer.encryption.unsecure_aes_iv = bytes(16)
     writer.encryption.secure_aes_key = bytes(32)
+    writer.encryption.peer_pubkey = object()
 
 
 class EncryptedStation:

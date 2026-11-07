@@ -1513,9 +1513,10 @@ class DeviceReader:
 
                 try:
                     message_type = message.type
-                except ValueError:
-                    # Unknown frame. bleak runs this callback as a detached
-                    # task, so raising here is silent and the read hangs.
+                except (ValueError, IndexError):
+                    # Unknown type byte, or a frame too short to carry one.
+                    # bleak runs this callback as a detached task, so raising
+                    # here is silent and the read hangs.
                     self.logger.warning("Unknown key exchange message type")
                     return
 
@@ -1579,7 +1580,8 @@ class DeviceReader:
 
                 try:
                     decrypted_type = decrypted.type
-                except ValueError:
+                except (ValueError, IndexError):
+                    # Unknown type byte, or a frame too short to carry one.
                     self.logger.warning("Unknown key exchange message type")
                     return
 

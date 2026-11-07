@@ -56,7 +56,14 @@ _TYPE_FIELDS = (
 # the probe then ends on its own timeout, which resyncs and keeps the link for
 # the plain probe, rather than on the key exchange giving up, which closes a
 # supplied client.
-ENCRYPTED_PROBE_TIMEOUT_SECONDS = 8
+#
+# A station that is not encrypted never answers the key exchange, so it waits
+# this whole timeout out before the plain probe runs. Bench timings over a live
+# link: notifications were up about 0.8s after connect, the exchange confirmed
+# within the next second, and the type read took another 0.4s, so an AP300
+# recognised in 2.05s and a Charger 2 in 1.37s. Five seconds is still more than
+# twice the worst of those.
+ENCRYPTED_PROBE_TIMEOUT_SECONDS = 5
 PLAIN_PROBE_TIMEOUT_SECONDS = 8
 
 

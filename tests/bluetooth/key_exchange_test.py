@@ -1,4 +1,5 @@
 import asyncio
+import re
 import unittest
 from unittest import mock
 
@@ -384,7 +385,47 @@ class TestChecksum(unittest.TestCase):
         self.assertIn("type=CHALLENGE", detail)
         self.assertIn("received=", detail)
         self.assertIn("computed=", detail)
-        self.assertIn("frame=", detail)
+        # Length replaces the frame: enough to tie a bad frame to a link and a
+        # moment, without carrying anything that decrypts.
+        self.assertIn("length=8", detail)
+        self.assertNotIn("frame=", detail)
+
+    def test_mismatch_omits_the_frame_and_the_iv_seed(self):
+        # A plaintext CHALLENGE body is type, flags, then the 4-byte IV seed,
+        # and msg_challenge() turns that seed into the unsecure session key with
+        # md5(seed[::-1]) XOR a constant from the library. Logging the frame at
+        # ERROR therefore used to hand over a working key on a corrupted frame.
+        seed = b"\xde\xa0\xbe\xef"
+        frame = bytearray(
+            self.challenge_frame(bytes([MessageType.CHALLENGE.value, 0]) + seed)
+        )
+        # Corrupt the flags byte, not the seed: TestChecksum.corrupt() flips the
+        # last body byte, which here is part of the seed, and a test that only
+        # ever sees the seed mangled passes against the leak it exists to catch.
+        frame[3] ^= 0xFF
+        message = Message(bytes(frame))
+
+        with self.assertLogs(encryption_mod._LOGGER, level="ERROR") as logs:
+            message.verify_checksum("BaseDeviceV1 00:11:00:11:00:11 plaintext")
+
+        detail = logs.output[0]
+        self.assertNotIn(seed.hex(), detail)
+        self.assertNotIn(seed[::-1].hex(), detail)
+        self.assertNotIn(bytes(frame).hex(), detail)
+
+    def test_mismatch_leaks_no_blob_a_frame_could_hide_in(self):
+        # Guards the shape rather than one seed: the two checksums are 4 hex
+        # characters each and the MAC is colon-separated, so anything long
+        # enough here is frame or payload material that has crept back in.
+        frame = self.challenge_frame(
+            bytes([MessageType.CHALLENGE.value, 0]) + bytes(range(12))
+        )
+        message = Message(self.corrupt(frame))
+
+        with self.assertLogs(encryption_mod._LOGGER, level="ERROR") as logs:
+            message.verify_checksum("BaseDeviceV1 00:11:00:11:00:11 decrypted")
+
+        self.assertIsNone(re.search(r"[0-9a-f]{12,}", logs.output[0]), logs.output[0])
 
     def test_unknown_type_is_labelled_without_raising(self):
         # The log line runs before the caller has accepted the type byte, so it

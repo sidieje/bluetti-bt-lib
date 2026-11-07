@@ -191,13 +191,20 @@ class Message:
         message_checksum = bytes(self.checksum)
         computed_checksum = hexsum(self.body, len(message_checksum))
         if computed_checksum != message_checksum:
+            # The frame itself never belongs in this line. A plaintext
+            # CHALLENGE carries a 4-byte IV seed, and msg_challenge() derives
+            # the session key from it as md5(seed) XOR a constant compiled into
+            # the library, so the frame alone is enough to decrypt the whole
+            # unsecure channel. A checksum mismatch is precisely how a corrupted
+            # CHALLENGE shows up, so this is the line most likely to print one.
+            # Length still correlates a bad frame with a link and a moment.
             _LOGGER.error(
-                "Checksum error%s: type=%s received=%s computed=%s frame=%s",
+                "Checksum error%s: type=%s received=%s computed=%s length=%d",
                 where,
                 self.type_label(),
                 message_checksum.hex(),
                 computed_checksum.hex(),
-                bytes(self.buffer).hex(),
+                len(self.buffer),
             )
             return False
         _LOGGER.debug("Checksum OK%s", where)

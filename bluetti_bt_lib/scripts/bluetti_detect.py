@@ -41,8 +41,15 @@ def start():
         parser.print_help()
         return
 
-    # The probes log at DEBUG, which is the only way to see how long a key
-    # exchange took to appear and which register reported the type.
-    logging.basicConfig(level=logging.DEBUG if args.verbose else logging.WARNING)
+    if args.verbose:
+        # Timestamps, so the gap between two probe lines can be read off the
+        # log: the only way to tell how long a key exchange took to appear.
+        logging.basicConfig(
+            level=logging.DEBUG,
+            format="%(asctime)s.%(msecs)03d %(name)s: %(message)s",
+            datefmt="%H:%M:%S",
+        )
+    else:
+        logging.basicConfig(level=logging.WARNING)
 
     asyncio.run(async_detect_device(args.mac))

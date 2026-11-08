@@ -689,42 +689,14 @@ class DeviceWriter:
                         """One read-back of the register(s) holding the field.
 
                         None when the attempt produced no usable answer.
+
+                        A shared control word needs no special case here: the
+                        field's own address and size name exactly the register
+                        the read-modify-write targeted, and its parse() decodes
+                        every half of the word. An unknown word makes parse()
+                        raise, which leaves the field out of the answer and
+                        surfaces as a skipped-field streak on the device.
                         """
-                        if is_shared_control:
-                            address = shared_control.address
-                            raw_data = await self.reader.read_locked(
-                                [ReadableRegisters(address, 1)],
-                                raw=True,
-                            )
-                            raw_word = raw_data.get(address) if raw_data else None
-
-                            if raw_word is None or len(raw_word) != 2:
-                                return None
-
-                            actual_word = struct.unpack("!H", raw_word)[0]
-
-                            self.logger.debug(
-                                "%s register %d read-back: "
-                                "raw=%s decoded=0x%04X expected_field=%s "
-                                "requested=%r",
-                                device_label,
-                                address,
-                                raw_word.hex(),
-                                actual_word,
-                                field,
-                                value,
-                            )
-
-                            if actual_word not in shared_control.state_table:
-                                self.logger.warning(
-                                    "Unknown %s read-back value: 0x%04X",
-                                    device_label,
-                                    actual_word,
-                                )
-                                return None
-
-                            return self.bluetti_device.parse(address, raw_word)
-
                         return await self.reader.read_locked(
                             [
                                 ReadableRegisters(

@@ -1,7 +1,6 @@
 import struct
 
 from ..base_devices import BaseDeviceV2
-from ..bluetooth import ReadableRegisters
 from ..enums import ReverseChargingMode
 from ..fields import (
     BoolField,
@@ -14,7 +13,6 @@ from ..fields import (
     SerialNumberField,
     SignedDecimalField,
 )
-from ..registers import WriteableRegister
 
 
 # Register 15600 contains both the system state and silent charging state.
@@ -280,13 +278,3 @@ class CHARGER2(BaseDeviceV2):
             )
 
         return super().build_write_command(name, value)
-
-    def get_device_type_registers(self):
-        return [
-            ReadableRegisters(15500, 6),
-        ]
-
-    def get_device_sn_registers(self):
-        return [
-            ReadableRegisters(15506, 4),
-        ]

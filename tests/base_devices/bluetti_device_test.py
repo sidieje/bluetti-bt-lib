@@ -105,6 +105,11 @@ class TestBluettiDevice(unittest.TestCase):
 
         device = BluettiDevice(fields)
 
+        for value, raw in ((True, 1), (False, 0)):
+            with self.subTest(value=value):
+                command = device.build_write_command(FieldName.CTRL_AC.value, value)
+                self.assertEqual((command.address, command.value), (150, raw))
+
         # The field already says a bool is the only value it takes, so the
         # write says so too. Left to truthiness, 2, -1, 1.0 and "true" would
         # all reach the station as ON and None, "" and [] as OFF.

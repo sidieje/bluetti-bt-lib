@@ -36,5 +36,23 @@ class BaseDeviceV2(BluettiDevice):
     def get_iot_version(self) -> int:
         return 2
 
+    # V2 pack polling is disabled, so the two pack methods below are commented
+    # out rather than deleted. This is deliberate -- commit 6bca489 "added
+    # ep600 test, disabled v2 pack polling" turned them off as a unit -- and it
+    # is the reason EP600, the only V2 profile with pack fields, keeps
+    # max_packs at 0. See the note there for how to resume.
+    #
+    # Both are untested. The selector address was guessed twice and confirmed
+    # neither time: 3001 when the code was first written (805040f) and 7000 when
+    # it was switched off. get_pack_selector_register() is inherited from
+    # BluettiDevice, which reports None for "no bank selector", so the reader
+    # would not save and restore the bank either. Uncommenting only one of the
+    # two is not enough to enable the walk.
+    #
+    # Re-add WriteableRegister to the ..registers import above as well.
+    #
     # def get_pack_selector(self, pack: int) -> WriteableRegister:
-    #     return WriteableRegister(7000, pack)  # TODO test
+    #     return WriteableRegister(7000, pack)
+    #
+    # def get_pack_selector_register(self) -> int:
+    #     return 7000

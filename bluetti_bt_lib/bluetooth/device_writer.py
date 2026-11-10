@@ -885,6 +885,13 @@ class DeviceWriter:
         try:
             decrypted = Message(self.encryption.aes_decrypt(complete_message, key, iv))
         except ValueError as err:
+            # Same guard, same reasoning as the reader's handler: ValueError
+            # covers the block-alignment check and cryptography's complaints
+            # about a key or IV of the wrong size, and a TypeError for a
+            # missing key is not reachable because getKeyIv() only returns
+            # bytes or a key that was already checked for None. The frame was
+            # taken out of the buffer before the decrypt, so the clear() here
+            # is belt-and-braces rather than the recovery.
             self.logger.error("Decryption failed: %s", err)
             self.encrypted_buffer.clear()
             return

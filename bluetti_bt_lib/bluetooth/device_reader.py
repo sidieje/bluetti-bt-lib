@@ -1571,6 +1571,21 @@ class DeviceReader:
                     self.encryption.aes_decrypt(complete_message, key, iv)
                 )
             except ValueError as e:
+                # ValueError is the whole set of what aes_decrypt() can raise
+                # here: its own block-alignment check, and cryptography's
+                # complaints about a key or an IV of the wrong size. A
+                # TypeError for a missing key is not reachable. getKeyIv()
+                # returns one of two attributes and both are always bytes:
+                # unsecure_aes_key is only ever set from hexxor() over two
+                # 16-byte values (md5 of the peer's challenge seed, and the
+                # constant key), which is the only way it could become None,
+                # and secure_aes_key comes from an ECDH exchange. The guard
+                # above turns away the one window where the unsecure key is
+                # still None, and nothing awaits between it and here.
+                # The clear() is belt-and-braces rather than the recovery:
+                # this frame was already taken out of the buffer before the
+                # decrypt, so a raise here cannot leave a stale frame in
+                # front of the stream.
                 self.logger.error("Decryption failed: %s", e)
                 self.encrypted_buffer.clear()
                 return

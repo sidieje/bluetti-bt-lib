@@ -391,6 +391,10 @@ class BluettiDevice:
                 return None
             value = option.value
         elif isinstance(field, SwitchField):
+            if not field.allowed_write_type(value):
+                # Truthiness would otherwise decide for the caller: 2, -1 and
+                # "true" all land as ON while None and "" land as OFF.
+                return None
             value = 1 if value else 0
         elif isinstance(field, NumberField):
             if not field.allowed_write_type(value) or not field.in_range(value):

@@ -5,11 +5,13 @@ from ..fields import (
     NumberField,
     DecimalField,
     SwapStringField,
-    SerialNumberField,
-    VersionField,
     SwitchField,
     BoolField,
 )
+
+# Only the disabled pack fields at the end of this file use these. Uncomment
+# together with those fields, not before.
+# from ..fields import SerialNumberField, VersionField
 
 
 class EP600(BaseDeviceV2):
@@ -76,13 +78,34 @@ class EP600(BaseDeviceV2):
                 DecimalField(FieldName.GRID_FREQ_MAX_VALUE, 2438, 2),
                 SwapStringField(FieldName.WIFI_NAME, 12002, 16),
             ],
-            [
-                SwapStringField(FieldName.PACK_TYPE, 6101, 6),
-                SerialNumberField(FieldName.PACK_SN, 6107),
-                VersionField(FieldName.PACK_VER_BCU, 6175),
-                VersionField(FieldName.PACK_VER_BMU, 6178),
-                VersionField(FieldName.PACK_VER_SAFETY_MOD, 6181),
-                VersionField(FieldName.PACK_VER_HV_MOD, 6184),
-            ],
+            # Battery pack fields: disabled, needs work, untested. Kept
+            # commented out rather than deleted so the register map survives
+            # for whoever picks the work up. This is deliberate, not leftover
+            # from a refactor -- see commit 6bca489 "added ep600 test, disabled
+            # v2 pack polling", which turned V2 pack polling off as a unit.
+            #
+            # Why the fields cannot be read today: walking the pack slots
+            # writes a bank selector first, and BaseDeviceV2 has no
+            # get_pack_selector() (its override is commented out for the same
+            # reason, with the address guessed at 3001 and later 7000 and never
+            # confirmed on hardware). Without a selector, max_packs has to stay
+            # 0, and BluettiDevice.__init__ then leaves
+            # pack_polling_registers empty, so the reader never walks the slots.
+            #
+            # To resume: confirm the selector register against a real EP600,
+            # implement BaseDeviceV2.get_pack_selector() and
+            # get_pack_selector_register(), restore the two imports at the top
+            # of this file, and uncomment the list below together with
+            # max_packs. Then check the values against a station with a pack
+            # fitted. None of these addresses has ever been read back from a
+            # live EP600, so do not enable this on their strength alone.
+            # [
+            #     SwapStringField(FieldName.PACK_TYPE, 6101, 6),
+            #     SerialNumberField(FieldName.PACK_SN, 6107),
+            #     VersionField(FieldName.PACK_VER_BCU, 6175),
+            #     VersionField(FieldName.PACK_VER_BMU, 6178),
+            #     VersionField(FieldName.PACK_VER_SAFETY_MOD, 6181),
+            #     VersionField(FieldName.PACK_VER_HV_MOD, 6184),
+            # ],
             # max_packs=2,
         )

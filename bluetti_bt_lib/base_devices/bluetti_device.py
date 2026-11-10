@@ -163,7 +163,10 @@ class BluettiDevice:
         self.pack_count_fields: List[DeviceField] = []
         self.packless_polling_registers: List[ReadableRegisters] = self.polling_registers
 
-        # Check if we even have battery pack fields defined
+        # No pack walk without both slots to walk and fields to read there. A
+        # profile that declares pack fields but leaves max_packs at 0 is
+        # switched off on purpose, not half-wired: EP600 does exactly that
+        # because no V2 bank selector has been confirmed on hardware.
         if len(self.pack_fields) == 0 or max_packs == 0:
             return
 
@@ -223,7 +226,13 @@ class BluettiDevice:
         raise NotImplementedError
 
     def get_pack_selector(self, pack: int) -> WriteableRegister:
-        """Returns the register to request a specific battery pack"""
+        """Returns the register to request a specific battery pack.
+
+        Only BaseDeviceV1 implements this. BaseDeviceV2 has its override
+        commented out because no V2 station has been available to confirm the
+        selector register, and its profiles therefore keep max_packs at 0,
+        which stops the reader from ever reaching this (see devices/ep600.py).
+        """
         raise NotImplementedError
 
     def get_pack_selector_register(self) -> int | None:
@@ -231,7 +240,8 @@ class BluettiDevice:
 
         None when the profile has no bank selector. The reader uses it to put
         the value back after probing the slots: writing slot numbers into this
-        register changes the number of packs the station reports.
+        register changes the number of packs the station reports. Only
+        BaseDeviceV1 provides one, like get_pack_selector().
         """
         return None
 
@@ -381,6 +391,10 @@ class BluettiDevice:
                 return None
             value = option.value
         elif isinstance(field, SwitchField):
+            if not field.allowed_write_type(value):
+                # Truthiness would otherwise decide for the caller: 2, -1 and
+                # "true" all land as ON while None and "" land as OFF.
+                return None
             value = 1 if value else 0
         elif isinstance(field, NumberField):
             if not field.allowed_write_type(value) or not field.in_range(value):

@@ -98,6 +98,27 @@ class TestBluettiDevice(unittest.TestCase):
         self.assertEqual(command.address, 150)
         self.assertEqual(command.value, 1)
 
+    def test_a_switch_write_only_takes_a_bool(self):
+        fields = [
+            SwitchField(FieldName.CTRL_AC, 150),
+        ]
+
+        device = BluettiDevice(fields)
+
+        for value, raw in ((True, 1), (False, 0)):
+            with self.subTest(value=value):
+                command = device.build_write_command(FieldName.CTRL_AC.value, value)
+                self.assertEqual((command.address, command.value), (150, raw))
+
+        # The field already says a bool is the only value it takes, so the
+        # write says so too. Left to truthiness, 2, -1, 1.0 and "true" would
+        # all reach the station as ON and None, "" and [] as OFF.
+        for value in (0, 1, 2, -1, 1.0, "true", "", [], None):
+            with self.subTest(value=value):
+                self.assertIsNone(
+                    device.build_write_command(FieldName.CTRL_AC.value, value)
+                )
+
     def test_build_write_command_not_writeable(self):
         fields = [
             BoolField(FieldName.CTRL_DC, 160),

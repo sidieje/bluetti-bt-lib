@@ -14,7 +14,7 @@ from .encryption import AES_BLOCK_SIZE, BluettiEncryption, Message, MessageType
 from .bleak_errors import describe_bleak_error
 from ..const import NOTIFY_UUID, WRITE_UUID
 from ..base_devices import BluettiDevice
-from ..fields import EnumField, SharedRegisterControlField
+from ..fields import EnumField, PulseSwitchField, SharedRegisterControlField
 from ..utils.privacy import mac_loggable
 from .device_reader import DeviceReader, HANDSHAKE_TIMEOUT_SECONDS
 from ..registers import ReadableRegisters, WriteableRegister
@@ -460,7 +460,11 @@ class DeviceWriter:
     async def write_verified(
         self, field: str, value: Any
     ) -> WriteVerificationResult:
-        """Write a field and read back its actual device state."""
+        """Write a field and read back its actual device state.
+
+        A pulse control whose state already matches the request is reported as
+        verified without sending the pulse; see the skip in _write().
+        """
         result = await self._write(field, value, verify=True)
         assert isinstance(result, WriteVerificationResult)
         return result
@@ -494,6 +498,9 @@ class DeviceWriter:
             else None
         )
         is_shared_control = shared_control is not None
+        # A pulse control has to be checked against the state before it is sent;
+        # see the skip inside the lock below.
+        pulse = field_obj if isinstance(field_obj, PulseSwitchField) else None
         device_label = type(self.bluetti_device).__name__
 
         if is_shared_control:
@@ -620,6 +627,49 @@ class DeviceWriter:
                             )
 
                         command = WriteableRegister(address, new_word)
+
+                    if pulse is not None and self.reader is not None:
+                        # A pulse moves the station whichever way it is asked, so
+                        # a request that already matches the state it reports must
+                        # not send one: the station would land in the other state,
+                        # and the read-backs below would report that change as a
+                        # write that had not taken effect. Home Assistant retries
+                        # a switch service call, so the redundant request is the
+                        # common case rather than a corner of it.
+                        current_values = await self.reader.read_locked(
+                            [ReadableRegisters(pulse.address, pulse.size)]
+                        )
+                        current = (
+                            current_values.get(field) if current_values else None
+                        )
+
+                        if current is None:
+                            # Nothing to condition the pulse on. The state word is
+                            # the only one these controls answer, so fall back to
+                            # the pulse rather than refuse the control outright.
+                            self.logger.warning(
+                                "Unable to read the %s state before pulsing %d: "
+                                "sending it anyway",
+                                field,
+                                pulse.write_address,
+                            )
+                        elif current == value:
+                            self.logger.debug(
+                                "%s already reports %r: skipping the pulse to %d",
+                                field,
+                                value,
+                                pulse.write_address,
+                            )
+                            return (
+                                WriteVerificationResult(
+                                    write_succeeded=True,
+                                    readback_succeeded=True,
+                                    values={field: current},
+                                    verified=True,
+                                )
+                                if verify
+                                else True
+                            )
 
                     command_bytes = bytes(command)
                     if self.config.use_encryption:

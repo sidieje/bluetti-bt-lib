@@ -111,6 +111,11 @@ whichever way it is asked to move, because 2013 is a pulse rather than a
 mirror of the state. Only the two profiles that were traced through it carry
 it, and the state word has only ever been read on an Apex 300.
 
+Since one pulse moves the station whichever way it is asked, the writer reads
+174 first and sends nothing when the station already reports the state that was
+asked for: a retried switch call would otherwise toggle the standby state the
+other way and report the change it made as a write that had not landed.
+
 The eco auto-off thresholds (registers 2016 and 2019) are readable on most
 Elite portables, but they are only writable where an owner has confirmed the
 Bluetti app offers them, and the ranges differ per model: 5-20 W on DC and

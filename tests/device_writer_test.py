@@ -21,6 +21,7 @@ from bluetti_bt_lib.devices.ac180 import AC180
 from bluetti_bt_lib.fields import (
     FieldName,
     NumberField,
+    PulseSwitchField,
     SelectField,
     SwitchField,
     UIntField,
@@ -295,6 +296,140 @@ class TestVerifiedSelectWrite(unittest.IsolatedAsyncioTestCase):
 
         self.assertFalse(result.write_succeeded)
         self.assertFalse(result.verified)
+
+
+STANDBY_ON = 8
+
+
+class TestPulseSwitchWrite(unittest.IsolatedAsyncioTestCase):
+    """A pulse moves the station whichever way it is asked, so a request that
+    already matches the state it reports must not send one at all."""
+
+    async def asyncSetUp(self):
+        self.client = ClientMockNoEncryption()
+        self.original_write = self.client.write_gatt_char
+        self.device = BluettiDevice(
+            fields=[
+                PulseSwitchField(
+                    FieldName.CTRL_SLEEP_MODE,
+                    174,
+                    pulse_address=2013,
+                    pulse_value=2,
+                    on_bit=STANDBY_ON,
+                    verification_delay=0.05,
+                )
+            ]
+        )
+        self.lock = asyncio.Lock()
+        self.reader = DeviceReader(
+            mac=self.client.address,
+            bluetti_device=self.device,
+            future_builder_method=asyncio.get_running_loop().create_future,
+            config=DeviceReaderConfig(timeout=10),
+            lock=self.lock,
+            ble_client=self.client,
+        )
+        self.writer = DeviceWriter(
+            self.client,
+            self.device,
+            DeviceWriterConfig(timeout=10),
+            self.lock,
+            reader=self.reader,
+        )
+
+        self.pulses: list[tuple[int, int]] = []
+        self.awake = True
+
+        def set_state(awake: bool) -> None:
+            self.awake = awake
+            self.client.add_r_int(174, 0 if awake else STANDBY_ON)
+
+        self.set_state = set_state
+        set_state(awake=True)
+
+        async def pulse_station(char_specifier, data, response=None):
+            command = bytes(data)
+            if len(command) >= 4 and command[1] == 6:
+                address, value = struct.unpack_from("!HH", command, 2)
+                self.pulses.append((address, value))
+                if address == 2013 and value == 2:
+                    # 2013 is a power button: it wakes or sleeps the station
+                    # depending on where it already was, and reads 0 either way.
+                    set_state(not self.awake)
+                return
+
+            await self.original_write(char_specifier, data, response)
+
+        self.client.write_gatt_char = pulse_station
+
+    async def asyncTearDown(self):
+        await self.reader.disconnect()
+
+    async def test_a_request_that_matches_the_state_sends_no_pulse(self):
+        # Home Assistant retries a switch service call, and the old behaviour
+        # pulsed anyway: the station moved to the other state and the read-backs
+        # reported that change as a write that had not landed.
+        self.set_state(awake=True)
+
+        result = await self.writer.write_verified(
+            FieldName.CTRL_SLEEP_MODE.value, False
+        )
+
+        self.assertEqual([], self.pulses)
+        self.assertTrue(result.write_succeeded)
+        self.assertTrue(result.readback_succeeded)
+        self.assertTrue(result.verified)
+        self.assertEqual(
+            {FieldName.CTRL_SLEEP_MODE.value: False},
+            result.values,
+        )
+        self.assertTrue(self.awake)
+
+    async def test_a_request_that_moves_the_state_pulses_once(self):
+        self.set_state(awake=True)
+
+        result = await self.writer.write_verified(FieldName.CTRL_SLEEP_MODE.value, True)
+
+        self.assertEqual([(2013, 2)], self.pulses)
+        self.assertTrue(result.verified)
+        self.assertEqual(
+            {FieldName.CTRL_SLEEP_MODE.value: True},
+            result.values,
+        )
+
+    async def test_an_unreadable_state_word_falls_back_to_the_pulse(self):
+        # 174 is the only word these controls answer, so a read that gets
+        # nothing cannot decide the state: send the pulse rather than refuse.
+        async def no_answer(*_args, **_kwargs):
+            return None
+
+        self.reader.read_locked = no_answer
+
+        with self.assertLogs(
+            "bluetti_bt_lib.bluetooth.device_writer", level="WARNING"
+        ) as logs:
+            result = await self.writer.write_verified(
+                FieldName.CTRL_SLEEP_MODE.value, True
+            )
+
+        self.assertEqual([(2013, 2)], self.pulses)
+        self.assertFalse(result.verified)
+        self.assertTrue(any("Unable to read" in line for line in logs.output))
+
+    async def test_a_writer_without_a_reader_still_pulses(self):
+        # A standalone writer has no way to read the state first, so it keeps
+        # the old unconditional behaviour rather than refusing the control.
+        writer = DeviceWriter(
+            self.client,
+            self.device,
+            DeviceWriterConfig(timeout=10),
+            self.lock,
+        )
+
+        result = await writer.write(FieldName.CTRL_SLEEP_MODE.value, False)
+
+        self.assertEqual([(2013, 2)], self.pulses)
+        self.assertTrue(result)
 
 
 class TestSlowStationIsReRead(unittest.IsolatedAsyncioTestCase):

@@ -14,7 +14,7 @@ from .encryption import AES_BLOCK_SIZE, BluettiEncryption, Message, MessageType
 from .bleak_errors import describe_bleak_error
 from ..const import NOTIFY_UUID, WRITE_UUID
 from ..base_devices import BluettiDevice
-from ..fields import EnumField, SharedRegisterControlField
+from ..fields import EnumField, PulseSwitchField, SharedRegisterControlField
 from ..utils.privacy import mac_loggable
 from .device_reader import DeviceReader, HANDSHAKE_TIMEOUT_SECONDS
 from ..registers import ReadableRegisters, WriteableRegister
@@ -454,13 +454,23 @@ class DeviceWriter:
 
 
     async def write(self, field: str, value: Any) -> bool:
-        """Write a field, retaining the existing boolean API."""
+        """Write a field, retaining the existing boolean API.
+
+        A pulse control whose state already matches the request is skipped. When
+        that state cannot be read the pulse is still sent, unlike write_verified,
+        which refuses; see _write().
+        """
         return await self._write(field, value, verify=False)
 
     async def write_verified(
         self, field: str, value: Any
     ) -> WriteVerificationResult:
-        """Write a field and read back its actual device state."""
+        """Write a field and read back its actual device state.
+
+        A pulse control is pulsed only once its current state has been
+        established: skipped when that state already matches the request, refused
+        when the state word cannot be read. See the skip in _write().
+        """
         result = await self._write(field, value, verify=True)
         assert isinstance(result, WriteVerificationResult)
         return result
@@ -494,6 +504,9 @@ class DeviceWriter:
             else None
         )
         is_shared_control = shared_control is not None
+        # A pulse control has to be checked against the state before it is sent;
+        # see the skip inside the lock below.
+        pulse = field_obj if isinstance(field_obj, PulseSwitchField) else None
         device_label = type(self.bluetti_device).__name__
 
         if is_shared_control:
@@ -620,6 +633,70 @@ class DeviceWriter:
                             )
 
                         command = WriteableRegister(address, new_word)
+
+                    if pulse is not None and self.reader is not None:
+                        # A pulse moves the station whichever way it is asked, so
+                        # a request that already matches the state it reports must
+                        # not send one: the station would land in the other state,
+                        # and the read-backs below would report that change as a
+                        # write that had not taken effect. Home Assistant retries
+                        # a switch service call, so the redundant request is the
+                        # common case rather than a corner of it.
+                        current_values = await self.reader.read_locked(
+                            [ReadableRegisters(pulse.address, pulse.size)]
+                        )
+                        current = (
+                            current_values.get(field) if current_values else None
+                        )
+
+                        if current is None:
+                            # The state word is the only one these controls
+                            # answer, so a read that gets nothing cannot be
+                            # resolved by asking elsewhere.
+                            if verify:
+                                # A verified write promises a state, and a pulse
+                                # of unknown direction cannot deliver one: it moves
+                                # the station to whichever state it was not in. A
+                                # station already in the state that was asked for
+                                # would leave this call reporting the change it had
+                                # just made as a write that had not landed, which is
+                                # the failure this skip exists to avoid, so an
+                                # unestablished state is not a state to write from.
+                                self.logger.warning(
+                                    "Unable to read the %s state, so the pulse to "
+                                    "%d was not sent",
+                                    field,
+                                    pulse.write_address,
+                                )
+                                return WriteVerificationResult(False, False)
+
+                            # A plain write has never promised anything beyond
+                            # sending the command, so it keeps the pulse: refusing
+                            # it would take the control out for a single failed
+                            # read of a register that is polled anyway.
+                            self.logger.warning(
+                                "Unable to read the %s state before pulsing %d: "
+                                "sending it anyway",
+                                field,
+                                pulse.write_address,
+                            )
+                        elif current == value:
+                            self.logger.debug(
+                                "%s already reports %r: skipping the pulse to %d",
+                                field,
+                                value,
+                                pulse.write_address,
+                            )
+                            return (
+                                WriteVerificationResult(
+                                    write_succeeded=True,
+                                    readback_succeeded=True,
+                                    values={field: current},
+                                    verified=True,
+                                )
+                                if verify
+                                else True
+                            )
 
                     command_bytes = bytes(command)
                     if self.config.use_encryption:

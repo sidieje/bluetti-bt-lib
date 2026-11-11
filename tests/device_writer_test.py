@@ -397,9 +397,11 @@ class TestPulseSwitchWrite(unittest.IsolatedAsyncioTestCase):
             result.values,
         )
 
-    async def test_an_unreadable_state_word_falls_back_to_the_pulse(self):
-        # 174 is the only word these controls answer, so a read that gets
-        # nothing cannot decide the state: send the pulse rather than refuse.
+    async def test_a_verified_write_is_refused_while_the_state_is_unknown(self):
+        # A pulse of unknown direction cannot deliver the state this API
+        # promises: it moves the station to whichever state it was not in, so a
+        # station already in the requested state would come back reporting the
+        # change it had just made as a write that had not landed.
         async def no_answer(*_args, **_kwargs):
             return None
 
@@ -412,9 +414,30 @@ class TestPulseSwitchWrite(unittest.IsolatedAsyncioTestCase):
                 FieldName.CTRL_SLEEP_MODE.value, True
             )
 
-        self.assertEqual([(2013, 2)], self.pulses)
+        self.assertEqual([], self.pulses)
+        self.assertFalse(result.write_succeeded)
+        self.assertFalse(result.readback_succeeded)
         self.assertFalse(result.verified)
-        self.assertTrue(any("Unable to read" in line for line in logs.output))
+        self.assertIsNone(result.values)
+        self.assertTrue(any("was not sent" in line for line in logs.output))
+
+    async def test_a_plain_write_still_pulses_while_the_state_is_unknown(self):
+        # A plain write has never promised anything beyond sending the command,
+        # so it keeps the pulse rather than lose the control over a single
+        # failed read of a register the profile polls anyway.
+        async def no_answer(*_args, **_kwargs):
+            return None
+
+        self.reader.read_locked = no_answer
+
+        with self.assertLogs(
+            "bluetti_bt_lib.bluetooth.device_writer", level="WARNING"
+        ) as logs:
+            result = await self.writer.write(FieldName.CTRL_SLEEP_MODE.value, True)
+
+        self.assertEqual([(2013, 2)], self.pulses)
+        self.assertTrue(result)
+        self.assertTrue(any("sending it anyway" in line for line in logs.output))
 
     async def test_a_writer_without_a_reader_still_pulses(self):
         # A standalone writer has no way to read the state first, so it keeps

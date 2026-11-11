@@ -454,7 +454,12 @@ class DeviceWriter:
 
 
     async def write(self, field: str, value: Any) -> bool:
-        """Write a field, retaining the existing boolean API."""
+        """Write a field, retaining the existing boolean API.
+
+        A pulse control whose state already matches the request is skipped. When
+        that state cannot be read the pulse is still sent, unlike write_verified,
+        which refuses; see _write().
+        """
         return await self._write(field, value, verify=False)
 
     async def write_verified(
@@ -462,8 +467,9 @@ class DeviceWriter:
     ) -> WriteVerificationResult:
         """Write a field and read back its actual device state.
 
-        A pulse control whose state already matches the request is reported as
-        verified without sending the pulse; see the skip in _write().
+        A pulse control is pulsed only once its current state has been
+        established: skipped when that state already matches the request, refused
+        when the state word cannot be read. See the skip in _write().
         """
         result = await self._write(field, value, verify=True)
         assert isinstance(result, WriteVerificationResult)
@@ -644,9 +650,30 @@ class DeviceWriter:
                         )
 
                         if current is None:
-                            # Nothing to condition the pulse on. The state word is
-                            # the only one these controls answer, so fall back to
-                            # the pulse rather than refuse the control outright.
+                            # The state word is the only one these controls
+                            # answer, so a read that gets nothing cannot be
+                            # resolved by asking elsewhere.
+                            if verify:
+                                # A verified write promises a state, and a pulse
+                                # of unknown direction cannot deliver one: it moves
+                                # the station to whichever state it was not in. A
+                                # station already in the state that was asked for
+                                # would leave this call reporting the change it had
+                                # just made as a write that had not landed, which is
+                                # the failure this skip exists to avoid, so an
+                                # unestablished state is not a state to write from.
+                                self.logger.warning(
+                                    "Unable to read the %s state, so the pulse to "
+                                    "%d was not sent",
+                                    field,
+                                    pulse.write_address,
+                                )
+                                return WriteVerificationResult(False, False)
+
+                            # A plain write has never promised anything beyond
+                            # sending the command, so it keeps the pulse: refusing
+                            # it would take the control out for a single failed
+                            # read of a register that is polled anyway.
                             self.logger.warning(
                                 "Unable to read the %s state before pulsing %d: "
                                 "sending it anyway",

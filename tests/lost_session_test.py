@@ -24,6 +24,9 @@ class TestLostSession(unittest.IsolatedAsyncioTestCase):
         station = ScriptedMock()
         station.add_r_int(PACK_NUM_REGISTER, 4)
         reader = self._reader(station)
+        # The request is sent directly rather than through read(), so the poll
+        # cycle it belongs to has to be opened by hand.
+        reader._begin_cycle()
         with patch.object(device_reader, "RETRY_PAUSE_SECONDS", 0):
             with self.assertRaises(device_reader.ResponseTimeout):
                 await reader._async_send_command(ReadableRegisters(PACK_NUM_REGISTER, 1))

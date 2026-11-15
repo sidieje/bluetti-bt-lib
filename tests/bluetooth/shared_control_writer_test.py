@@ -158,6 +158,20 @@ class TestSharedControlWriter(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(command.address, SHARED_ADDRESS)
         self.assertNotIn(command.value, STATES)
 
+    async def test_a_shared_write_does_not_touch_the_poll_streak(self):
+        # The read-modify-write reads through read_locked(), so it is not a
+        # polling cycle and must not be counted as one: doing that would hand
+        # the next poll a clean slate and hide a station that aborts every one.
+        self.client.add_r_int(SHARED_ADDRESS, 0x1234)
+        # A poll cycle aborted, and no poll has run since to account for it.
+        self.reader.link_stats.abort_streak = 1
+        self.reader._cycle_aborted = True
+
+        self.assertTrue(await self.writer.write(FIRST, True))
+
+        self.assertEqual(self.reader.link_stats.abort_streak, 1)
+        self.assertTrue(self.reader._cycle_aborted)
+
     async def test_verified_write_reads_both_halves_back(self):
         self.client.add_r_int(SHARED_ADDRESS, 0x1234)
 

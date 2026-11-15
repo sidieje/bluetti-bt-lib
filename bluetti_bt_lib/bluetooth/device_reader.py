@@ -583,32 +583,44 @@ class DeviceReader:
             self._notified_client = None
 
     async def disconnect(self):
-        """Clean up the reader's notification and connection state."""
+        """Clean up the reader's notification and connection state.
+
+        Exception-safe for the reason DeviceWriter.disconnect() documents: a
+        backend that has already dropped the link raises things bleak does
+        not wrap, and an exception escaping here left _connected set over a
+        subscription that was already gone. Ownership is unchanged -- a
+        caller-supplied ble_client is still never disconnected here.
+        """
         async with self.polling_lock:
-            if self.has_notifier and self.client:
-                try:
-                    await self.client.stop_notify(NOTIFY_UUID)
-                    self.logger.debug("Stopped notifier")
-                except Exception:
-                    pass
-                self.has_notifier = False
-                self._notified_client = None
+            try:
+                if self.has_notifier and self.client:
+                    try:
+                        await self.client.stop_notify(NOTIFY_UUID)
+                        self.logger.debug("Stopped notifier")
+                    except Exception as err:
+                        self.logger.debug("Failed to unsubscribe: %s", err)
+                    self.has_notifier = False
+                    self._notified_client = None
 
-            # Only disconnect clients created and managed by this reader.
-            # A supplied ble_client belongs to the caller.
-            if (
-                self.ble_client is None
-                and self.client
-                and self.client.is_connected
-            ):
-                await self.client.disconnect()
-                self.logger.debug("Disconnected from device")
-
-            self.encryption.reset()
-            self.encrypted_buffer.clear()
-            self.last_notification = None
-            self._connected = False
-            self._startup_values.clear()
+                # Only disconnect clients created and managed by this reader.
+                # A supplied ble_client belongs to the caller.
+                if (
+                    self.ble_client is None
+                    and self.client
+                    and self.client.is_connected
+                ):
+                    try:
+                        await self.client.disconnect()
+                        self.logger.debug("Disconnected from device")
+                    except Exception as err:
+                        # Normal on a link the stack already dropped.
+                        self.logger.debug("Failed to disconnect: %s", err)
+            finally:
+                self.encryption.reset()
+                self.encrypted_buffer.clear()
+                self.last_notification = None
+                self._connected = False
+                self._startup_values.clear()
 
     async def _read_uint16(self, address: int) -> int | None:
         """Read one uint16 register, or None when the answer is too short."""

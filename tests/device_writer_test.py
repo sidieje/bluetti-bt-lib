@@ -155,7 +155,7 @@ class TestDeviceWriter(unittest.IsolatedAsyncioTestCase):
             _select_verification_delay(fast),
             DEFAULT_VERIFICATION_WINDOW_SECONDS,
         )
-        self.assertEqual(DEFAULT_VERIFICATION_WINDOW_SECONDS, 3.5)
+        self.assertEqual(DEFAULT_VERIFICATION_WINDOW_SECONDS, 4.0)
 
         # A field-declared window wins over the default.
         slow = NumberField(
@@ -541,6 +541,19 @@ class TestSlowStationIsReRead(unittest.IsolatedAsyncioTestCase):
         # verification tries again instead of calling the write a failure.
         self.assertTrue(result.verified)
         self.assertEqual(self.reads, 2)
+
+    async def test_a_station_that_only_refreshes_near_the_end_is_confirmed(self):
+        # The AC300's UPS mode register has been seen to follow a write that
+        # landed after the previous 3.5s window had already given up, which Home
+        # Assistant reported as a value mismatch even though the setting had
+        # changed. A refresh past that mark but inside the current window must
+        # still be caught, so the lag sits just beyond 3.5s.
+        self.lag_station(3.7)
+        self.client.add_r_int(150, 0)
+
+        result = await self.writer.write_verified(FieldName.CTRL_AC.value, True)
+
+        self.assertTrue(result.verified)
 
     async def test_a_station_that_never_catches_up_is_not_verified(self):
         self.lag_station(5.0)

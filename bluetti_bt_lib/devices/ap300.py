@@ -64,7 +64,7 @@ class AP300(BaseDeviceV2):
                 # so the pulse register costs no read of its own, and 174 costs
                 # only the read the standby word used to need on its own.
                 #
-                # The verification window is wider than the 3.5s default because
+                # The verification window is wider than the 4s default because
                 # nothing has measured how fast 174 follows the pulse; a shorter
                 # window would report a write that had landed as unconfirmed.
                 PulseSwitchField(

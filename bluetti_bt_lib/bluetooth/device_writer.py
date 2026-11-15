@@ -30,9 +30,10 @@ VERIFICATION_FIRST_READ_SECONDS = 1.0
 VERIFICATION_REREAD_SECONDS = 0.5
 
 # Window used when a field does not declare its own. The AC300's registers can
-# lag a control by more than three seconds, and the extra half second only costs
-# a write that has already failed five read-backs.
-DEFAULT_VERIFICATION_WINDOW_SECONDS = 3.5
+# lag a control by more than three seconds, and its UPS mode has been seen to
+# land outside a 3.5s window even though the write took effect. The extra half
+# second only costs a write that has already failed six read-backs.
+DEFAULT_VERIFICATION_WINDOW_SECONDS = 4.0
 
 # How long a standalone writer waits for the station to answer a write.
 WRITE_ACK_TIMEOUT_SECONDS = 5

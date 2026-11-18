@@ -10,6 +10,7 @@ from bleak.exc import BleakGATTProtocolError
 from bluetti_bt_lib import DeviceReader
 from bluetti_bt_lib.base_devices import BaseDeviceV1
 from bluetti_bt_lib.bluetooth import device_reader
+from bluetti_bt_lib.registers import ReadableRegisters
 from bluetti_bt_lib.registers.WriteableRegister import WriteableRegister
 from bluetti_bt_lib.utils.bleak_client_mock import ClientMockNoEncryption
 
@@ -29,6 +30,25 @@ class DeafMock(ClientMockNoEncryption):
     async def write_gatt_char(self, char_specifier, data, response=None) -> None:
         self.requests += 1
         if self.requests in self.deaf_at:
+            return
+
+        await super().write_gatt_char(char_specifier, data, response)
+
+
+class OnDemandDeafMock(ClientMockNoEncryption):
+    """Answers every request while ``deaf`` is false, then drops every one.
+
+    A test of who owns a cycle needs the abort to land on a chosen read rather
+    than on a chosen request number, and the numbering of a whole poll -- with
+    its retries and its reconnects -- is awkward to predict.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.deaf = False
+
+    async def write_gatt_char(self, char_specifier, data, response=None) -> None:
+        if self.deaf:
             return
 
         await super().write_gatt_char(char_specifier, data, response)
@@ -355,6 +375,89 @@ class TestTimeoutLogging(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("cycles in a row", self.aborted(logs)[0])
         self.assertIn("2 cycles in a row with an abort", self.aborted(logs)[1])
         self.assertEqual(reader.link_stats.abort_streak, 1)
+
+    # A read the writer does on its own behalf -- a read-back, or the
+    # read-modify-write of a shared register -- is not a polling cycle, so it
+    # must not own the abort streak. Both directions matter: consuming a
+    # pending abort hands the next poll a clean slate and hides a station that
+    # fails every cycle, and recording an abort of its own blames the next poll
+    # for a fault it never had.
+
+    async def test_a_read_for_the_writer_does_not_eat_a_pending_abort(self):
+        ble_mock = OnDemandDeafMock()
+        ble_mock.add_r_int(36, 1)
+        reader = self.make_reader(ble_mock)
+        await reader.connect()
+
+        with self.fast_timing(), patch.object(device_reader, "STRAY_ANSWER_SECONDS", 0):
+            with self.assertLogs(reader.logger, level="DEBUG") as logs:
+                ble_mock.deaf = True
+                await reader.read()
+
+                ble_mock.deaf = False
+                await reader.read_locked([ReadableRegisters(36, 1)], raw=True)
+
+                ble_mock.deaf = True
+                await reader.read()
+
+        self.assertEqual(len(self.aborted(logs)), 2)
+        self.assertIn("2 cycles in a row with an abort", self.aborted(logs)[1])
+        self.assertEqual(reader.link_stats.abort_streak, 1)
+
+    async def test_a_writer_abort_is_not_blamed_on_the_next_poll(self):
+        ble_mock = OnDemandDeafMock()
+        reader = self.make_reader(ble_mock)
+        await reader.connect()
+
+        with self.fast_timing(), patch.object(device_reader, "STRAY_ANSWER_SECONDS", 0):
+            await reader.read()
+
+            ble_mock.deaf = True
+            await reader.read_locked([ReadableRegisters(36, 1)], raw=True)
+            # Checked before any poll runs, so a later cycle cannot tidy this
+            # up and let the fault through unnoticed.
+            self.assertFalse(reader._cycle_aborted)
+
+            ble_mock.deaf = False
+            await reader.read()
+
+        self.assertEqual(reader.link_stats.abort_streak, 0)
+
+    async def test_a_writer_abort_still_leaves_its_evidence(self):
+        # Left out of the streak, but not left out of the log or the counters:
+        # anyone reading this still needs to see that a read went unanswered.
+        ble_mock = OnDemandDeafMock()
+        reader = self.make_reader(ble_mock)
+        await reader.connect()
+        ble_mock.deaf = True
+
+        with self.fast_timing(), patch.object(device_reader, "STRAY_ANSWER_SECONDS", 0):
+            with self.assertLogs(reader.logger, level="DEBUG") as logs:
+                self.assertIsNone(
+                    await reader.read_locked([ReadableRegisters(36, 1)], raw=True)
+                )
+
+        self.assertEqual(len(self.aborted(logs)), 1)
+        self.assertEqual(reader.link_stats.failure, "silent")
+        self.assertIn("starting_address=36", reader.link_stats.aborted)
+        self.assertFalse(reader._cycle_aborted)
+
+    async def test_each_read_for_the_writer_gets_its_own_counters(self):
+        # The writer reads twice in a row sometimes -- the current values, then
+        # the read-back -- and each is a measurement window of its own, so the
+        # second must not inherit the counters of the first.
+        ble_mock = OnDemandDeafMock()
+        ble_mock.add_r_int(36, 1)
+        ble_mock.add_r_int(37, 1)
+        reader = self.make_reader(ble_mock)
+
+        with self.fast_timing():
+            await reader.read_locked([ReadableRegisters(36, 1)], raw=True)
+            first = reader.link_stats.requests
+            await reader.read_locked([ReadableRegisters(37, 1)], raw=True)
+
+        self.assertEqual(first, 1)
+        self.assertEqual(reader.link_stats.requests, 1)
 
     async def test_a_repeated_fault_of_a_kind_warns_once(self):
         # A tower that does this every forty minutes is a quirk of that station,

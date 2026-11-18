@@ -30,57 +30,93 @@ async def async_write(
     # rest of that word, so the writer has to be built on the reader's link.
     needs_reader = built.requires_read_modify_write(field)
 
-    if needs_reader:
-        # The reader and writer must share one BLE connection and lock.
-        polling_lock = asyncio.Lock()
+    # Initialised up front so the cleanup below can tell what was built.
+    reader = None
+    writer = None
+    try:
+        if needs_reader:
+            # The reader and writer must share one BLE connection and lock.
+            polling_lock = asyncio.Lock()
 
-        reader = DeviceReader(
-            address,
-            built,
-            asyncio.Future,
-            DeviceReaderConfig(use_encryption=encryption),
-            lock=polling_lock,
-            ble_client=client,
-        )
+            reader = DeviceReader(
+                address,
+                built,
+                asyncio.Future,
+                DeviceReaderConfig(use_encryption=encryption),
+                lock=polling_lock,
+                ble_client=client,
+            )
 
-        print("Reader created")
+            print("Reader created")
 
-        # Connect the shared BLE client before the reader sets up notifications.
+            # Connect the shared BLE client before the reader sets up notifications.
+            try:
+                async with polling_lock:
+                    if not client.is_connected:
+                        await client.connect()
+
+                    if not await reader.connect():
+                        print("Unable to connect to device")
+                        return
+            except BleakError as err:
+                print(f"Unable to connect to device: {err}")
+                return
+
+            writer = DeviceWriter(
+                client,
+                built,
+                DeviceWriterConfig(use_encryption=encryption),
+                lock=polling_lock,
+                reader=reader,
+            )
+
+            # Reuse the reader's notification handler and encryption session.
+            writer.attach(reader.encryption)
+
+        else:
+            # Preserve the existing path for other devices and fields.
+            writer = DeviceWriter(
+                client,
+                built,
+                DeviceWriterConfig(use_encryption=encryption),
+            )
+
+        print("Writer created")
+
+        await writer.write(field, value)
+    finally:
+        # Three separate responsibilities: the reader stops its notification
+        # subscription, the writer clears its own state, and this script --
+        # which built the BleakClient -- owns the physical disconnect on every
+        # path.  Neither library component drops a caller-supplied client:
+        # DeviceReader leaves it alone by design, and an attached DeviceWriter
+        # deliberately never touches the shared link (there the reader owns the
+        # notifier, not the writer).
+        #
+        # Order matters: stop_notify needs a live connection, so the client
+        # goes down last.  Both disconnect() methods take polling_lock, so
+        # this must stay outside the `async with polling_lock` above or it
+        # deadlocks against the same coroutine.
+        #
+        # Each step is guarded on its own: a failure stopping notifications
+        # must not skip the disconnect that frees the powerstation.  Bare
+        # Exception is deliberate -- asyncio.CancelledError derives from
+        # BaseException and should keep propagating.
+        if reader is not None:
+            try:
+                await reader.disconnect()
+            except Exception as err:
+                print(f"Error cleaning up reader: {err}")
+        if writer is not None:
+            try:
+                await writer.disconnect()
+            except Exception as err:
+                print(f"Error cleaning up writer: {err}")
         try:
-            async with polling_lock:
-                if not client.is_connected:
-                    await client.connect()
-
-                if not await reader.connect():
-                    print("Unable to connect to device")
-                    await client.disconnect()
-                    return
-        except BleakError as err:
-            print(f"Unable to connect to device: {err}")
-            return
-
-        writer = DeviceWriter(
-            client,
-            built,
-            DeviceWriterConfig(use_encryption=encryption),
-            lock=polling_lock,
-            reader=reader,
-        )
-
-        # Reuse the reader's notification handler and encryption session.
-        writer.attach(reader.encryption)
-
-    else:
-        # Preserve the existing path for other devices and fields.
-        writer = DeviceWriter(
-            client,
-            built,
-            DeviceWriterConfig(use_encryption=encryption),
-        )
-
-    print("Writer created")
-
-    await writer.write(field, value)
+            if client.is_connected:
+                await client.disconnect()
+        except Exception as err:
+            print(f"Error disconnecting client: {err}")
 
 
 def start():

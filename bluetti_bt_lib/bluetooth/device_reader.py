@@ -228,6 +228,9 @@ class DeviceReader:
         self._rx_unexpected = bytearray()
         self._cycle_aborted = False
         """Set when a read cycle ended in an abort, to carry the streak over."""
+        self._poll_cycle = False
+        """Whether the transaction in progress is a poll cycle rather than a
+        read on the writer's behalf. Decides who owns ``_cycle_aborted``."""
         self._retry_pending = False
         """Set while a read is being asked for a second time, so the answer can
         be counted as a recovery rather than a plain answer."""
@@ -580,32 +583,44 @@ class DeviceReader:
             self._notified_client = None
 
     async def disconnect(self):
-        """Clean up the reader's notification and connection state."""
+        """Clean up the reader's notification and connection state.
+
+        Exception-safe for the reason DeviceWriter.disconnect() documents: a
+        backend that has already dropped the link raises things bleak does
+        not wrap, and an exception escaping here left _connected set over a
+        subscription that was already gone. Ownership is unchanged -- a
+        caller-supplied ble_client is still never disconnected here.
+        """
         async with self.polling_lock:
-            if self.has_notifier and self.client:
-                try:
-                    await self.client.stop_notify(NOTIFY_UUID)
-                    self.logger.debug("Stopped notifier")
-                except Exception:
-                    pass
-                self.has_notifier = False
-                self._notified_client = None
+            try:
+                if self.has_notifier and self.client:
+                    try:
+                        await self.client.stop_notify(NOTIFY_UUID)
+                        self.logger.debug("Stopped notifier")
+                    except Exception as err:
+                        self.logger.debug("Failed to unsubscribe: %s", err)
+                    self.has_notifier = False
+                    self._notified_client = None
 
-            # Only disconnect clients created and managed by this reader.
-            # A supplied ble_client belongs to the caller.
-            if (
-                self.ble_client is None
-                and self.client
-                and self.client.is_connected
-            ):
-                await self.client.disconnect()
-                self.logger.debug("Disconnected from device")
-
-            self.encryption.reset()
-            self.encrypted_buffer.clear()
-            self.last_notification = None
-            self._connected = False
-            self._startup_values.clear()
+                # Only disconnect clients created and managed by this reader.
+                # A supplied ble_client belongs to the caller.
+                if (
+                    self.ble_client is None
+                    and self.client
+                    and self.client.is_connected
+                ):
+                    try:
+                        await self.client.disconnect()
+                        self.logger.debug("Disconnected from device")
+                    except Exception as err:
+                        # Normal on a link the stack already dropped.
+                        self.logger.debug("Failed to disconnect: %s", err)
+            finally:
+                self.encryption.reset()
+                self.encrypted_buffer.clear()
+                self.last_notification = None
+                self._connected = False
+                self._startup_values.clear()
 
     async def _read_uint16(self, address: int) -> int | None:
         """Read one uint16 register, or None when the answer is too short."""
@@ -975,7 +990,9 @@ class DeviceReader:
                     await self._abandon_handshake()
                     return None
 
-                self._begin_cycle()
+                # Not a poll cycle: this is a read on the writer's behalf, so
+                # it gets fresh counters without owning the abort streak.
+                self._begin_cycle(poll_cycle=False)
 
                 for register in only_registers:
                     body = register.parse_response(
@@ -1096,16 +1113,32 @@ class DeviceReader:
             extra,
         )
 
-    def _begin_cycle(self) -> None:
-        """Start counting a new read cycle.
+    def _begin_cycle(self, poll_cycle: bool = True) -> None:
+        """Start counting a new transaction on the wire.
 
-        The abort streak carries over: a station that fails the same way cycle
-        after cycle is a different fault from one that drops an occasional
-        request, and a single log line cannot tell them apart.
+        ``poll_cycle`` says whose transaction it is. A full poll is a cycle. A
+        read the writer does on its own behalf -- a read-back, or the
+        read-modify-write of a shared register -- is not, and only a poll is
+        counted in the abort streak.
+
+        The streak carries over between polls: a station that fails the same
+        way cycle after cycle is a different fault from one that drops an
+        occasional request, and a single log line cannot tell them apart. An
+        auxiliary read must not consume it, because that hands the next poll a
+        clean slate and hides a recurring fault; an auxiliary abort must not
+        add to it, because that blames the next poll for a fault it never had.
+        Both kinds still get their own counters, since each is a separate
+        measurement window.
         """
         stats = self.link_stats
-        stats.abort_streak = stats.abort_streak + 1 if self._cycle_aborted else 0
-        self._cycle_aborted = False
+        # Established for every transaction instead of left over from the last
+        # one, so an abort is attributed to whoever is really reading.
+        self._poll_cycle = poll_cycle
+        if poll_cycle:
+            stats.abort_streak = (
+                stats.abort_streak + 1 if self._cycle_aborted else 0
+            )
+            self._cycle_aborted = False
         stats.requests = 0
         stats.answered = 0
         stats.slowest = 0.0
@@ -1122,6 +1155,16 @@ class DeviceReader:
         stats.discarded = 0
         stats.repeats = 0
         self._retry_pending = False
+
+    def _note_cycle_abort(self) -> None:
+        """Mark the poll cycle in progress as aborted.
+
+        Called wherever a request goes unanswered, once the wire evidence has
+        been recorded. An auxiliary read is not a cycle, so its abort is left
+        out of the streak -- it is still logged in full, with the same detail.
+        """
+        if self._poll_cycle:
+            self._cycle_aborted = True
 
     def _record_answer(self, registers: DeviceRegister, elapsed: float) -> None:
         """Note a request that was answered, and how long it took."""
@@ -1260,7 +1303,7 @@ class DeviceReader:
                 stats = self.link_stats
                 stats.aborted = str(registers)
                 stats.failure = "session"
-                self._cycle_aborted = True
+                self._note_cycle_abort()
                 raise ResponseTimeout(registers, "encryption session lost")
 
             try:
@@ -1429,7 +1472,7 @@ class DeviceReader:
             stats.failure = kind
             stats.received = self._rx_bytes
             stats.sample = self._rx_sample()
-            self._cycle_aborted = True
+            self._note_cycle_abort()
 
             # The warning is the caller's, which can say what the abort cost;
             # this is the detail line that goes with it.

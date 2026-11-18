@@ -418,40 +418,60 @@ class DeviceWriter:
                 self.logger.debug("Failed to disconnect: %s", err)
 
     async def disconnect(self):
-        """Disconnect from the device."""
+        """Disconnect from the device.
+
+        Every step is exception-safe, and the state reset happens in a
+        finally. A backend that has already dropped the link raises things
+        bleak does not wrap (COMError, OSError, RuntimeError), and an
+        exception escaping here used to abort the teardown part way through:
+        _connected stayed set, so the next connect() took its fast path over
+        a notifier that no longer existed, and every later disconnect()
+        repeated the same failing call first, so the writer could never be
+        torn down at all. _mark_disconnected() already tears down this way.
+        """
         if not self._connected:
             return
 
         async with self.polling_lock:
-            if self.has_notifier:
-                try:
-                    await self.client.stop_notify(NOTIFY_UUID)
-                except BleakError:
-                    pass
-                self.has_notifier = False
-            # Without this the next connect() skips the subscription and the
-            # key exchange, and every later write fails on the reset session.
-            self._owns_notifier = False
+            try:
+                if self.has_notifier:
+                    try:
+                        await self.client.stop_notify(NOTIFY_UUID)
+                    except Exception as err:
+                        # The subscription is not ours to retry either way:
+                        # the flag goes down below regardless.
+                        self.logger.debug("Failed to unsubscribe: %s", err)
+                    self.has_notifier = False
 
-            # Only disconnect clients that this writer established.
-            # When attached, the client belongs to the reader: pulling
-            # it down here would kill the reader's connection while the
-            # reader still believes it is connected.
-            if (
-                not self._attached
-                and self.client
-                and self.client.is_connected
-            ):
-                await self.client.disconnect()
-                self.logger.debug("Disconnected from device")
-
-            if not self._borrowed_encryption:
-                self.encryption.reset()
-            self.encrypted_buffer.clear()
-            self.encryption_ready.clear()
-            self.handshake_failed = False
-            self._handshake_failed_event.clear()
-            self._connected = False
+                # Only disconnect clients that this writer established.
+                # When attached, the client belongs to the reader: pulling
+                # it down here would kill the reader's connection while the
+                # reader still believes it is connected.
+                if (
+                    not self._attached
+                    and self.client
+                    and self.client.is_connected
+                ):
+                    try:
+                        await self.client.disconnect()
+                        self.logger.debug("Disconnected from device")
+                    except Exception as err:
+                        # Normal on a link the stack already dropped, hence
+                        # debug rather than warning.
+                        self.logger.debug("Failed to disconnect: %s", err)
+            finally:
+                # These belong to the writer alone, so they are reset even
+                # when a step above raised. Without them the next connect()
+                # skips the subscription and the key exchange, and every
+                # later write fails on the reset session.
+                self._owns_notifier = False
+                if not self._borrowed_encryption:
+                    self.encryption.reset()
+                self.encrypted_buffer.clear()
+                self.encryption_ready.clear()
+                self.handshake_failed = False
+                self._handshake_failed_event.clear()
+                self._connected = False
 
 
     async def write(self, field: str, value: Any) -> bool:
